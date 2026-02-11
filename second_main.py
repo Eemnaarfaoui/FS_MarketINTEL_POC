@@ -3,9 +3,10 @@ import os
 import re
 import logging
 # Import modules
+from src.extraction.validate_passif_excel import validate_capitaux_propres_passif
 from src.scraper.cmf_scraper import init_driver, get_all_companies, select_company_and_submit, scrape_document_list
 from src.scraper.pdf_downloader import download_pdf, get_local_pdf_path
-from src.extraction.pdf_parser import search_table_in_pdf, extract_table_from_page, extract_passif, extract_actif, extract_ann12, extract_ann13
+from src.extraction.pdf_parser import search_table_in_pdf, extract_table_from_page, extract_passif 
 from src.extraction.excel_exporter import export_to_excel
 from src.database.db_manager import create_database_and_tables, insert_document, insert_financial_data_capitaux_passifs, get_document_by_company_year
 from src.extraction.extract_actifs import extract_actif
@@ -123,41 +124,7 @@ def run_extraction(company: str, year: int):
         print(f"✅ {len(hierarchical_data)} lignes structurées extraites")
 
         # ============================================================
-        # EXTRACTION ACTIF (from extract_actifs.py)
-        # ============================================================
-        print("🔍 Recherche du tableau ACTIF dans le PDF...")
-        print("Données trouvées à la page 2 (fixe pour ACTIF)")
-        data_actifs = extract_actif(pdf_path, 2, is_scanned)
-        if data_actifs:
-            print(f"✅ {len(data_actifs)} lignes ACTIF extraites")
-            # Export ACTIF to Excel
-            print("📁 Export ACTIF vers Excel en cours...")
-            export_actif_to_excel(
-                data_actifs,
-                
-                
-                f"{re.sub(r'[^\w\s-]', '_', target_societe).replace(' ', '_')}_{year}_actif_{re.sub(r'[^\w\s-]', '_', selected_doc['nom']).replace(' ', '_')}.xlsx",
-                year,
-                year - 1
-            )
-            print(f"✅ Fichier Excel ACTIF généré : {target_societe}_{year}_actif_{selected_doc['nom']}.xlsx")
-        else:
-            print("❌ Échec extraction ACTIF")
-
-        # ============================================================
-        # 6️⃣ INSERT FINANCIAL DATA
-        # ============================================================
-        print("💾 Insertion des données financières en base...")
-        doc_record = get_document_by_company_year(cursor, target_societe, year)
-
-        if doc_record:
-            doc_id = doc_record[0]
-            insert_financial_data_capitaux_passifs(cursor, doc_id, hierarchical_data)
-            connection.commit()
-            print("✅ Données financières insérées avec succès")
-
-        # ============================================================
-        # 7️⃣ EXPORT EXCEL
+        # 6️⃣ EXPORT EXCEL
         # ============================================================
 
         print("📁 Export vers Excel en cours...")
@@ -177,15 +144,74 @@ def run_extraction(company: str, year: int):
         )
         if result is True:
             print(f"✅ Fichier Excel généré : {output_name}")
+            excel_path = os.path.join(os.getcwd(), "outputs", safe_societe, output_name)
+            safe_societe = "".join(c if c.isalnum() or c in " _-" else "_" for c in target_societe)
+            if len(safe_societe) > 30:
+                    safe_societe = safe_societe[:27] + "_"
+
+            excel_path = os.path.join(os.getcwd(), "outputs", safe_societe, output_name)
+        # Validation du fichier Excel généré
+            print("\n🔍 Validation des données extraites PASSIF...")
+            validated_file = validate_capitaux_propres_passif(excel_path, target_societe)
+            print(f"✅ Validation terminée, fichier sauvegardé : {validated_file}")
         else:
             print("⚠️ Échec export Excel")
             if isinstance(result, str):
                 print(f"Détail erreur : {result}")
 
+        # ============================================================
+        # 7️⃣ EXTRACTION & VALIDATION DES ACTIFS
+        # ============================================================
+        print("🔍 Recherche du tableau ACTIF dans le PDF...")
+        print("Données trouvées à la page 2 (fixe pour ACTIF)")
+        data_actifs = extract_actif(pdf_path, 2, is_scanned)
+        if data_actifs:
+            print(f"✅ {len(data_actifs)} lignes ACTIF extraites")
+            # Export ACTIF to Excel
+            print("📁 Export ACTIF vers Excel en cours...")
+            export_actif_to_excel(
+                data_actifs,   
+                
+                f"{re.sub(r'[^\w\s-]', '_', target_societe).replace(' ', '_')}_{year}_actif_{re.sub(r'[^\w\s-]', '_', selected_doc['nom']).replace(' ', '_')}.xlsx",
+                year,
+                year - 1
+            )
+            print(f"✅ Fichier Excel ACTIF généré : {target_societe}_{year}_actif_{selected_doc['nom']}.xlsx")
+        else:
+            print("❌ Échec extraction ACTIF")
+
+
+        
+
+
+        
+
+
+
+
+
+
+
+        # ============================================================
+        # 6️⃣ INSERT FINANCIAL DATA
+        # ============================================================
+        print("💾 Insertion des données financières en base...")
+        doc_record = get_document_by_company_year(cursor, target_societe, year)
+
+        if doc_record:
+            doc_id = doc_record[0]
+            insert_financial_data_capitaux_passifs(cursor, doc_id, hierarchical_data)
+            connection.commit()
+            print("✅ Données financières insérées avec succès")
+
+        
+  
+
         elapsed = time.time() - start_time
         print(f"\n{'='*70}")
         print(f"🎉 EXTRACTION TERMINÉE EN {elapsed:.2f} secondes")
         print(f"{'='*70}")
+
 
     except Exception as e:
         logging.error(f"ERREUR GLOBALE : {str(e)}")

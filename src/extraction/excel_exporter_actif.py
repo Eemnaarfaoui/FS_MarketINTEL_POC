@@ -15,7 +15,7 @@ def export_actif_to_excel(actif_data, output_name_actif, year, year_1):
         top=Side(style='thin'),
         bottom=Side(style='thin')
     )
-    headers = ["DESIGNATION", "BRUT", "AMORT_PROV", f"NET_N {year}", f"NET_N1 {year_1}", "EXTRA"]
+    headers = ["DESIGNATION", "BRUT", "AMORT_PROV", f"NET_N {year}", f"NET_N1 {year_1}"]
     ws.append(headers)
     for col in range(1, len(headers)+1):
         cell = ws.cell(1, col)
