@@ -1,0 +1,17 @@
+mysql-connector-python
+selenium
+webdriver-manager
+PyPDF2
+requests
+pandas
+camelot-py[cv]
+PyMuPDF
+openpyxl
+pytesseract
+pdf2image
+Pillow
+pyodbc
+numpy
+keyboard
+fuzzywuzzy
+psutil
