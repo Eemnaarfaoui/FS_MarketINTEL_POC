@@ -11,6 +11,19 @@ from src.extraction.excel_exporter import export_to_excel
 from src.database.db_manager import create_database_and_tables, insert_document, insert_financial_data_capitaux_passifs, get_document_by_company_year
 from src.extraction.extract_actifs import extract_actif
 from src.extraction.excel_exporter_actif import export_actif_to_excel
+from src.extraction.validate_actif_excel import validate_actif_from_data
+
+
+def _build_output_dir(company_name):
+    """Build and create the output directory for a company."""
+    safe_name = re.sub(r'[^\w\s-]', '_', company_name).replace(' ', '_')
+    if len(safe_name) > 50:
+        safe_name = safe_name[:50]
+    output_dir = os.path.join(os.getcwd(), "outputs", safe_name)
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir, safe_name
+
+
 def run_extraction(company: str, year: int):
     """
     Automated narrated extraction workflow for PASSIF.
@@ -103,6 +116,13 @@ def run_extraction(company: str, year: int):
         print("✅ Métadonnées document enregistrées")
 
         # ============================================================
+        # SETUP OUTPUT DIRECTORY (single definition, used everywhere)
+        # ============================================================
+        output_dir, safe_societe = _build_output_dir(target_societe)
+        short_company = re.sub(r'[^\w]', '_', company).strip('_').upper()
+        print(f"📂 Dossier de sortie : {output_dir}")
+
+        # ============================================================
         # 5️⃣ SEARCH & EXTRACT PASSIF
         # ============================================================
         print("🔍 Recherche du tableau PASSIF dans le PDF...")
@@ -124,76 +144,77 @@ def run_extraction(company: str, year: int):
         print(f"✅ {len(hierarchical_data)} lignes structurées extraites")
 
         # ============================================================
-        # 6️⃣ EXPORT EXCEL
+        # 6️⃣ EXPORT PASSIF EXCEL
         # ============================================================
+        print("📁 Export PASSIF vers Excel en cours...")
 
-        print("📁 Export vers Excel en cours...")
-
-        safe_societe = re.sub(r'[^\w\s-]', '_', target_societe).replace(' ', '_')
-        safe_nom = re.sub(r'[^\w\s-]', '_', selected_doc['nom']).replace(' ', '_')
-
-        output_name = f"{safe_societe}_{year}_passif_{safe_nom}.xlsx"
+        passif_filename = f"{short_company}_{year}_passif.xlsx"
+        passif_path = os.path.join(output_dir, passif_filename)
 
         result = export_to_excel(
             hierarchical_data,
             target_societe,
             pdf_path,
-            output_name,
+            passif_path,
             year,
             year - 1
         )
-        if result is True:
-            print(f"✅ Fichier Excel généré : {output_name}")
-            excel_path = os.path.join(os.getcwd(), "outputs", safe_societe, output_name)
-            safe_societe = "".join(c if c.isalnum() or c in " _-" else "_" for c in target_societe)
-            if len(safe_societe) > 30:
-                    safe_societe = safe_societe[:27] + "_"
 
-            excel_path = os.path.join(os.getcwd(), "outputs", safe_societe, output_name)
-        # Validation du fichier Excel généré
+        if result is True:
+            print(f"✅ Fichier Excel PASSIF généré : {passif_path}")
+
+            # Validation PASSIF
             print("\n🔍 Validation des données extraites PASSIF...")
-            validated_file = validate_capitaux_propres_passif(excel_path, target_societe)
-            print(f"✅ Validation terminée, fichier sauvegardé : {validated_file}")
+            validated_file = validate_capitaux_propres_passif(passif_path, company)
+            print(f"✅ Validation PASSIF terminée : {validated_file}")
         else:
-            print("⚠️ Échec export Excel")
+            print("⚠️ Échec export Excel PASSIF")
             if isinstance(result, str):
                 print(f"Détail erreur : {result}")
 
         # ============================================================
-        # 7️⃣ EXTRACTION & VALIDATION DES ACTIFS
+        # 7️⃣ EXTRACTION & EXPORT ACTIF
         # ============================================================
         print("🔍 Recherche du tableau ACTIF dans le PDF...")
         print("Données trouvées à la page 2 (fixe pour ACTIF)")
-        data_actifs = extract_actif(pdf_path, 2, is_scanned)
+        data_actifs = extract_actif(pdf_path, 2, is_scanned=is_scanned)
+
         if data_actifs:
             print(f"✅ {len(data_actifs)} lignes ACTIF extraites")
+
             # Export ACTIF to Excel
             print("📁 Export ACTIF vers Excel en cours...")
+
+            actif_filename = f"{short_company}_{year}_actif.xlsx"
+            actif_path = os.path.join(output_dir, actif_filename)
+
             export_actif_to_excel(
-                data_actifs,   
-                
-                f"{re.sub(r'[^\w\s-]', '_', target_societe).replace(' ', '_')}_{year}_actif_{re.sub(r'[^\w\s-]', '_', selected_doc['nom']).replace(' ', '_')}.xlsx",
+                data_actifs,
+                actif_path,
                 year,
                 year - 1
             )
-            print(f"✅ Fichier Excel ACTIF généré : {target_societe}_{year}_actif_{selected_doc['nom']}.xlsx")
+
+            print(f"✅ Fichier Excel ACTIF généré : {actif_path}")
+
+            # Validation ACTIF
+            print("\n🔍 Validation des données extraites ACTIF...")
+            validated_actif_filename = f"{short_company}_{year}_actif_validated.xlsx"
+            validated_actif_path = os.path.join(output_dir, validated_actif_filename)
+
+            validated_file = validate_actif_from_data(
+                data_actifs=data_actifs,
+                assurance_name=target_societe,
+                annee=year,
+                output_xlsx=validated_actif_path
+            )
+
+            print(f"✅ Validation ACTIF terminée : {validated_file}")
         else:
             print("❌ Échec extraction ACTIF")
 
-
-        
-
-
-        
-
-
-
-
-
-
-
         # ============================================================
-        # 6️⃣ INSERT FINANCIAL DATA
+        # 8️⃣ INSERT FINANCIAL DATA
         # ============================================================
         print("💾 Insertion des données financières en base...")
         doc_record = get_document_by_company_year(cursor, target_societe, year)
@@ -204,14 +225,10 @@ def run_extraction(company: str, year: int):
             connection.commit()
             print("✅ Données financières insérées avec succès")
 
-        
-  
-
         elapsed = time.time() - start_time
         print(f"\n{'='*70}")
         print(f"🎉 EXTRACTION TERMINÉE EN {elapsed:.2f} secondes")
         print(f"{'='*70}")
-
 
     except Exception as e:
         logging.error(f"ERREUR GLOBALE : {str(e)}")
