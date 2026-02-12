@@ -8,36 +8,59 @@ import os
 TOLERANCE = 5
 
 
+# ==========================
+# Nettoyage numérique robuste
+# ==========================
 def clean_number(x):
+    """
+    Convertit en float.
+    Valeur vide ou invalide → 0.0
+    """
     if pd.isna(x):
-        return None
+        return 0.0
+
     if isinstance(x, (int, float)):
         return float(x)
 
-    s = str(x).replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    s = str(x).replace("\u00a0", "").replace(" ", "").replace(",", ".").strip()
+
+    if s == "":
+        return 0.0
+
     try:
         return float(s)
     except:
-        return None
+        return 0.0
 
 
+# ==========================
+# Extraction code AC
+# ==========================
 def extract_ac_code(designation):
     if pd.isna(designation):
         return None
+
     text = str(designation).upper()
     match = re.search(r"\bAC\s*(\d+)\b", text)
+
     if match:
         return "AC" + match.group(1)
+
     return None
 
 
+# ==========================
+# Merge doublons AC
+# ==========================
 def merge_duplicate_ac_rows(df):
+
     df["AC_CODE"] = df["DESIGNATION"].apply(extract_ac_code)
 
     df_with_code = df[df["AC_CODE"].notna()].copy()
     df_without_code = df[df["AC_CODE"].isna()].copy()
 
     cols_numeric = ["BRUT", "AMORT_PROV", "NET_N", "NET_N1"]
+
     merged_rows = []
 
     for code, group in df_with_code.groupby("AC_CODE", sort=False):
@@ -47,22 +70,30 @@ def merge_duplicate_ac_rows(df):
             group["DESIGNATION"].astype(str).str.len().argmax()
         ]
 
-        row = {"DESIGNATION": designation_best, "AC_CODE": code}
+        row = {
+            "DESIGNATION": designation_best,
+            "AC_CODE": code
+        }
 
-        # prendre valeur non vide
+        # prendre la première valeur non nulle
         for col in cols_numeric:
             values = group[col].dropna().tolist()
-            row[col] = values[0] if values else None
+            row[col] = float(values[0]) if values else 0.0
 
         merged_rows.append(row)
 
     df_merged = pd.DataFrame(merged_rows)
 
     df_final = pd.concat([df_merged, df_without_code], ignore_index=True)
+
     return df_final
 
 
+# ==========================
+# Validation principale
+# ==========================
 def validate_actif_from_data(data_actifs, assurance_name, annee, output_xlsx):
+
     df = pd.DataFrame(data_actifs)
 
     required_cols = ["DESIGNATION", "BRUT", "AMORT_PROV", "NET_N", "NET_N1"]
@@ -70,28 +101,41 @@ def validate_actif_from_data(data_actifs, assurance_name, annee, output_xlsx):
         if col not in df.columns:
             raise Exception(f"Colonne manquante dans ACTIF : {col}")
 
-    # Nettoyage
-    for col in ["BRUT", "AMORT_PROV", "NET_N", "NET_N1"]:
+    # ==========================
+    # Nettoyage numérique sécurisé
+    # ==========================
+    numeric_cols = ["BRUT", "AMORT_PROV", "NET_N", "NET_N1"]
+
+    for col in numeric_cols:
         df[col] = df[col].apply(clean_number)
+        df[col] = df[col].fillna(0.0).astype(float)
 
     df = df.dropna(subset=["DESIGNATION"])
 
-    # Merge doublons AC1 AC2...
+    # ==========================
+    # Merge doublons AC
+    # ==========================
     df = merge_duplicate_ac_rows(df)
 
-    # Ajouter metadata
+    # ==========================
+    # Ajout metadata
+    # ==========================
     df.insert(0, "ASSURANCE", assurance_name)
     df.insert(1, "ANNEE", annee)
 
+    # ==========================
     # Validation calcul
-    df["CALC_NET"] = df["BRUT"] - df["AMORT_PROV"]
-    df["DIFF"] = df["NET_N"] - df["CALC_NET"]
+    # ==========================
+    df["CALC_NET"] = (df["BRUT"] - df["AMORT_PROV"]).round(2)
+    df["DIFF"] = (df["NET_N"] - df["CALC_NET"]).round(2)
 
     df["STATUS"] = df["DIFF"].apply(
-        lambda x: "OK" if x is not None and abs(x) <= TOLERANCE else "NOT_OK"
+        lambda x: "OK" if abs(x) <= TOLERANCE else "NOT_OK"
     )
 
-    # Export Excel + couleurs
+    # ==========================
+    # Export Excel
+    # ==========================
     wb = Workbook()
     ws = wb.active
     ws.title = "ACTIF_VALIDATION"
@@ -108,15 +152,25 @@ def validate_actif_from_data(data_actifs, assurance_name, annee, output_xlsx):
         fill = green_fill if row["STATUS"] == "OK" else red_fill
 
         cols_to_color = ["BRUT", "AMORT_PROV", "NET_N", "CALC_NET", "DIFF", "STATUS"]
+
         for col_name in cols_to_color:
             col_index = df.columns.get_loc(col_name) + 1
             ws.cell(row=current_row, column=col_index).fill = fill
-        
+
+    # ==========================
+    # Format currency Excel
+    # ==========================
+    currency_format = '#,##0.00'
+
+    for col_name in ["BRUT", "AMORT_PROV", "NET_N", "NET_N1", "CALC_NET", "DIFF"]:
+        col_index = df.columns.get_loc(col_name) + 1
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=col_index).number_format = currency_format
+
+    # ==========================
+    # Sauvegarde
+    # ==========================
     os.makedirs(os.path.dirname(output_xlsx), exist_ok=True)
-
-
-
     wb.save(output_xlsx)
 
     return output_xlsx
-
