@@ -206,3 +206,7 @@
 2026-02-11 10:48:13,767 - INFO - Get LATEST chromedriver version for google-chrome
 2026-02-11 10:48:14,441 - INFO - Get LATEST chromedriver version for google-chrome
 2026-02-11 10:48:14,957 - INFO - Driver [C:\Users\USER\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-11 16:17:31,150 - INFO - ====== WebDriver manager ======
+2026-02-11 16:17:31,989 - INFO - Get LATEST chromedriver version for google-chrome
+2026-02-11 16:17:32,667 - INFO - Get LATEST chromedriver version for google-chrome
+2026-02-11 16:17:33,184 - INFO - Driver [C:\Users\USER\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32/chromedriver.exe] found in cache
