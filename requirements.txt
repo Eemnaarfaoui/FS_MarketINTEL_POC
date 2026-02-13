@@ -3,7 +3,7 @@ selenium
 webdriver-manager
 PyPDF2
 requests
-pandas
+pandas  
 camelot-py[cv]
 PyMuPDF
 openpyxl
