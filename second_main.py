@@ -232,11 +232,9 @@ def run_extraction(company: str, year: int):
         else:
             print("ℹ️ DB désactivée (cursor/connection None) → insertion ignorée")
 
+            # ============================================================
+        # 9️⃣ LANCER ANNEXES 12/13 (Extraction1213 → NorVal12 → NorVal13)
         # ============================================================
-        # 9️⃣ LANCER ANNEXES 12/13 (TON WORKFLOW) APRÈS L’ORIGINAL
-        # ============================================================
-
-       # cmd = ["py", str(script_path), target_societe, str(year)]#
 
         print(f"\n{'='*70}")
         print("📌 LANCEMENT ANNEXES 12 & 13 (Extraction1213 → NorVal12 → NorVal13)")
@@ -248,12 +246,16 @@ def run_extraction(company: str, year: int):
         print("📍 base_dir     =", base_dir)
         print("📍 script_path  =", script_path)
 
+        if not script_path.exists():
+         raise FileNotFoundError(f"Extraction1213.py introuvable: {script_path}")
+
         cmd = [sys.executable, str(script_path), target_societe, str(year)]
         print("➡️ Commande:", " ".join(cmd))
 
         res = subprocess.run(cmd, capture_output=False)
-        rc_1213 = res.returncode
-        print(f"✅ ANNEXES 12/13 terminées, code retour = {rc_1213}")
+        print(f"✅ ANNEXES 12/13 terminées, code retour = {res.returncode}")
+
+
 
 
         
@@ -279,7 +281,7 @@ def run_extraction(company: str, year: int):
 
 if __name__ == "__main__":
     try:
-        run_extraction("Comar", 2024)
+        run_extraction("LLOYD TUNISIE", 2024)
     except Exception as e:
         print(f"Erreur : {e}")
    

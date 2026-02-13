@@ -20,7 +20,7 @@
 # - Export Excel (openpyxl) + style simple
 # - Safe save si fichier Excel est ouvert (PermissionError -> nouveau nom timestamp)
 # =================================================================================================
-
+from __future__ import annotations
 import os
 import re
 import time
@@ -35,6 +35,7 @@ import requests
 import mysql.connector
 from mysql.connector import Error
 
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -43,9 +44,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# import PyPDF2#
-#import pandas as pd#
-#import camelot #
+import PyPDF2
+import pandas as pd
+import camelot 
 
 import pytesseract
 from pdf2image import convert_from_path
@@ -63,8 +64,8 @@ from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 
 
 # ---------------------------------------------- Paramètres ----------------------------------------------
-SOCIETE = "COMPAGNIE MEDITERRANEENNE D'ASSURANCES ET DE REASSURANCES - COMAR -"
-ANNEE = 2024
+# SOCIETE = "COMPAGNIE MEDITERRANEENNE D'ASSURANCES ET DE REASSURANCES - COMAR -"
+# ANNEE = 2024
 ANNEXES = ["12", "13"]
 
 DOC_NAMES_ACCEPTES = [
