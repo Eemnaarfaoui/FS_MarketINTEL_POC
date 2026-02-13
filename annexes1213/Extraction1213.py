@@ -26,11 +26,15 @@ import re
 import time
 import logging
 from datetime import datetime
-from turtle import pd
+import pandas as pd
 from urllib.parse import urlparse, urlencode, parse_qs
 import glob
 import subprocess
+import camelot
+import PyPDF2
+from __future__ import annotations
 
+from pandas import DataFrame
 import requests
 import mysql.connector
 from mysql.connector import Error
@@ -821,7 +825,7 @@ def _looks_like_header_row(row) -> bool:
     return (numeric <= max(1, nonempty // 6)) and any(re.search(r"[A-Za-zÀ-ÿ]", _normalize_text_cell(x)) for x in row)
 
 
-def _detect_best_header_row(df: pd.DataFrame) -> int:
+def _detect_best_header_row(df: pd.DataFrame) -> int: # type: ignore
     if df is None or df.empty:
         return 0
 
@@ -846,7 +850,7 @@ def _detect_best_header_row(df: pd.DataFrame) -> int:
     return best_i
 
 
-def _drop_useless_top_rows(df: pd.DataFrame, max_drop=12) -> pd.DataFrame:
+def _drop_useless_top_rows(df: DataFrame, max_drop=12) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
