@@ -5,7 +5,10 @@ __pycache__/
 
 # C extensions
 *.so
-*.venv_all
+
+# extracted files
+*.pdf
+*.xlsx
 
 # Distribution / packaging
 .Python
@@ -144,6 +147,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.venv_all
 
 # Spyder project settings
 .spyderproject
