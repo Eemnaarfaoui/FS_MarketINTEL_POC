@@ -34,7 +34,7 @@ def run_extraction(company: str, year: int):
 
     start_time = time.time()
     print(f"\n{'='*70}")
-    print("🚀 EXTRACTION AUTOMATISÉE - CAPITAUX PROPRES ET PASSIF")
+    print("🚀 EXTRACTION AUTOMATISÉE - RAPPORTS ANNUELS CMF")
     print(f"{'='*70}")
     print(f"🏢 Société cible : {company}")
     print(f"📅 Année cible   : {year}")
