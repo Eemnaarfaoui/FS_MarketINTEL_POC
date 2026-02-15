@@ -1,4 +1,5 @@
 import time
+import sys
 import os
 import re
 import logging
@@ -12,6 +13,8 @@ from src.database.db_manager import create_database_and_tables, insert_document,
 from src.extraction.extract_actifs import extract_actif
 from src.extraction.excel_exporter_actif import export_actif_to_excel
 from src.extraction.validate_actif_excel import validate_actif_from_data
+import subprocess
+from pathlib import Path
 
 
 def _build_output_dir(company_name):
@@ -97,6 +100,7 @@ def run_extraction(company: str, year: int):
         # ============================================================
         # 4️⃣ DATABASE CONNECTION
         # ============================================================
+        """
         print("🗄️ Connexion à la base de données...")
         connection, cursor = create_database_and_tables()
 
@@ -114,7 +118,7 @@ def run_extraction(company: str, year: int):
         )
 
         print("✅ Métadonnées document enregistrées")
-
+        """
         # ============================================================
         # SETUP OUTPUT DIRECTORY (single definition, used everywhere)
         # ============================================================
@@ -213,18 +217,50 @@ def run_extraction(company: str, year: int):
         else:
             print("❌ Échec extraction ACTIF")
 
-        # ============================================================
+               # ============================================================
         # 8️⃣ INSERT FINANCIAL DATA
         # ============================================================
-        print("💾 Insertion des données financières en base...")
-        doc_record = get_document_by_company_year(cursor, target_societe, year)
+        if cursor is not None and connection is not None:
+            print("💾 Insertion des données financières en base...")
+            doc_record = get_document_by_company_year(cursor, target_societe, year)
 
-        if doc_record:
-            doc_id = doc_record[0]
-            insert_financial_data_capitaux_passifs(cursor, doc_id, hierarchical_data)
-            connection.commit()
-            print("✅ Données financières insérées avec succès")
+            if doc_record:
+                doc_id = doc_record[0]
+                insert_financial_data_capitaux_passifs(cursor, doc_id, hierarchical_data)
+                connection.commit()
+                print("✅ Données financières insérées avec succès")
+        else:
+            print("ℹ️ DB désactivée (cursor/connection None) → insertion ignorée")
 
+            # ============================================================
+        # 9️⃣ LANCER ANNEXES 12/13 (Extraction1213 → NorVal12 → NorVal13)
+        # ============================================================
+
+        print(f"\n{'='*70}")
+        print("📌 LANCEMENT ANNEXES 12 & 13 (Extraction1213 → NorVal12 → NorVal13)")
+        print(f"{'='*70}")
+
+        base_dir = Path(__file__).resolve().parent
+        script_path = (base_dir / "annexes1213" / "Extraction1213.py").resolve()
+
+        print("📍 base_dir     =", base_dir)
+        print("📍 script_path  =", script_path)
+
+        if not script_path.exists():
+         raise FileNotFoundError(f"Extraction1213.py introuvable: {script_path}")
+
+        cmd = [sys.executable, str(script_path), target_societe, str(year)]
+        print("➡️ Commande:", " ".join(cmd))
+
+        res = subprocess.run(cmd, capture_output=False)
+        print(f"✅ ANNEXES 12/13 terminées, code retour = {res.returncode}")
+
+
+
+
+        
+
+        
         elapsed = time.time() - start_time
         print(f"\n{'='*70}")
         print(f"🎉 EXTRACTION TERMINÉE EN {elapsed:.2f} secondes")
@@ -245,6 +281,7 @@ def run_extraction(company: str, year: int):
 
 if __name__ == "__main__":
     try:
-        run_extraction("Comar", 2024)
+        run_extraction("LLOYD TUNISIE", 2024)
     except Exception as e:
         print(f"Erreur : {e}")
+   
