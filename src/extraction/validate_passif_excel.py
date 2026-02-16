@@ -16,15 +16,72 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
     def is_row_empty(row):
         code_empty = pd.isna(row.get('Code')) or str(row.get('Code')).strip() == ''
         desc_empty = pd.isna(row.get('Sous-catégorie')) or str(row.get('Sous-catégorie')).strip() == ''
-        years_empty = all(pd.isna(row.get(col)) or row.get(col) == 0 for col in year_cols)
-        return code_empty and desc_empty and years_empty
+
+        def is_empty_or_year(val):
+            if pd.isna(val) or val == 0:
+                return True
+            if isinstance(val, (int, float)) and 2020 <= val <= 2030:
+                return True
+            return False
+
+        years_empty = all(is_empty_or_year(row.get(col)) for col in year_cols)
+
+        desc = str(row.get('Description', '')).strip().upper()
+        is_header_junk = desc in ('', 'DESIGNATION', 'MONTANT MONTANT', 'MONTANT')
+
+        return (code_empty and desc_empty and years_empty) or (code_empty and is_header_junk)
 
     filtered_df = df[~df.apply(is_row_empty, axis=1)].copy()
 
-    validator = ValidatorPassifs()
+    # ══════════════════════════════════════════════════════════════
+    # BUILD CONTEXT: collect all code → value mappings from the data
+    # The validator needs this to check parent = sum(children)
+    # ══════════════════════════════════════════════════════════════
+    first_year_col = year_cols[0] if year_cols else None
+
+    extracted_data_context = {}
+    for _, row in filtered_df.iterrows():
+        code = str(row.get('Code', '')).strip()
+        if not code or code == 'nan':
+            continue
+
+        # Get the first year column value
+        value = None
+        if first_year_col:
+            raw_val = row.get(first_year_col)
+            if pd.notna(raw_val):
+                try:
+                    value = float(raw_val)
+                except (TypeError, ValueError):
+                    value = None
+
+        # Don't overwrite an existing value with None
+        # (e.g. CP5 appears twice: once with value, once without)
+        if code in extracted_data_context and value is None:
+            pass  # Keep existing value
+        else:
+            extracted_data_context[code] = {'value': value}
+
+    print(f"\n📊 Context built: {len(extracted_data_context)} codes")
+    for code, data in sorted(extracted_data_context.items()):
+        v = data['value']
+        print(f"  {code}: {v:,.0f}" if v is not None else f"  {code}: None")
+
+    # ══════════════════════════════════════════════════════════════
+    # VALIDATE: pass context to validator so rules can check sums
+    # ══════════════════════════════════════════════════════════════
+    validator = ValidatorPassifs(extracted_data_context=extracted_data_context)
 
     def validate_row(row):
-        result = validator.validate(row.to_dict())
+        # Build a dict the validator understands:
+        #   'description' → from Description column
+        #   'values' → list of year column values
+        validator_row = {
+            'description': str(row.get('Description', '')),
+            'values': [row.get(col) for col in year_cols],
+            'code': str(row.get('Code', '')).strip(),
+        }
+        result = validator.validate(validator_row)
         return 'PASS' if result else 'FAIL'
 
     filtered_df['ValidationResult'] = filtered_df.apply(validate_row, axis=1)
@@ -33,6 +90,11 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
     # Convert year columns to numeric so Excel treats them as numbers
     for col in year_cols:
         filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+
+    # Count results
+    pass_count = (filtered_df['ValidationResult'] == 'PASS').sum()
+    fail_count = (filtered_df['ValidationResult'] == 'FAIL').sum()
+    print(f"\n✅ PASS: {pass_count}  ❌ FAIL: {fail_count}")
 
     # Save raw data first
     output_path = EXCEL_PATH.replace('.xlsx', '_validated.xlsx')
@@ -113,5 +175,12 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
     ws.freeze_panes = "A2"
 
     wb.save(output_path)
-    print(f'Validation complete. Output saved to: {output_path}')
+    print(f'\nValidation complete. Output saved to: {output_path}')
     return output_path
+
+
+if __name__ == "__main__":
+    validate_capitaux_propres_passif(
+        excel_path=r"C:/Users/USER/Documents/GitHub/FS_MarketINTEL_POC/outputs/Sté__TUNISIENNE_D_ASSURANCES_-_LLOYD_TUNISIEN_-/LLOYD_TUNISIE_2024_passif.xlsx",
+        company_name="LLOYD TUNISIE"
+    )

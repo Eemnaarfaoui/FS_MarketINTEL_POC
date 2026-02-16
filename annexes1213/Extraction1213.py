@@ -32,8 +32,9 @@ import glob
 import subprocess
 
 import requests
-import mysql.connector
-from mysql.connector import Error
+# ── MySQL imports commented out ──
+# import mysql.connector
+# from mysql.connector import Error
 
 
 from selenium import webdriver
@@ -83,11 +84,11 @@ OCR_PSM = "6"
 # Excel styling
 HEADER_COLOR = "0070C0"
 
-# MySQL
-MYSQL_HOST = "localhost"
-MYSQL_USER = "root"
-MYSQL_PASSWORD = ""
-MYSQL_DB = "cmf"
+# ── MySQL config commented out ──
+# MYSQL_HOST = "localhost"
+# MYSQL_USER = "root"
+# MYSQL_PASSWORD = ""
+# MYSQL_DB = "cmf"
 
 
 # ---------------------------------------------- Logs ----------------------------------------------
@@ -102,37 +103,37 @@ logging.basicConfig(
 )
 
 
-# ---------------------------------------------- DB ----------------------------------------------
-def create_cmf_database_and_table():
-    try:
-        connection = mysql.connector.connect(host=MYSQL_HOST, user=MYSQL_USER, password=MYSQL_PASSWORD)
-        cursor = connection.cursor()
-
-        logging.info("Création/mise à jour base 'cmf'...")
-        print("Création/mise à jour base 'cmf'...")
-
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
-        cursor.execute(f"USE {MYSQL_DB}")
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                Societe VARCHAR(255) NOT NULL,
-                Nom VARCHAR(255) NOT NULL,
-                Annee INT NOT NULL,
-                URL VARCHAR(512) NOT NULL,
-                UNIQUE KEY unique_document (Societe, Nom, Annee)
-            )
-            """
-        )
-        connection.commit()
-        logging.info("Base 'cmf' et table 'document' prêtes.")
-        print("Base 'cmf' et table 'document' prêtes.")
-        return connection, cursor
-    except Error as e:
-        logging.error(f"Erreur création base : {e}")
-        print(f"Erreur création base : {e}")
-        return None, None
+# ---------------------------------------------- DB (COMMENTED OUT) ----------------------------------------------
+# def create_cmf_database_and_table():
+#     try:
+#         connection = mysql.connector.connect(host=MYSQL_HOST, user=MYSQL_USER, password=MYSQL_PASSWORD)
+#         cursor = connection.cursor()
+#
+#         logging.info("Création/mise à jour base 'cmf'...")
+#         print("Création/mise à jour base 'cmf'...")
+#
+#         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
+#         cursor.execute(f"USE {MYSQL_DB}")
+#         cursor.execute(
+#             """
+#             CREATE TABLE IF NOT EXISTS document (
+#                 id INT AUTO_INCREMENT PRIMARY KEY,
+#                 Societe VARCHAR(255) NOT NULL,
+#                 Nom VARCHAR(255) NOT NULL,
+#                 Annee INT NOT NULL,
+#                 URL VARCHAR(512) NOT NULL,
+#                 UNIQUE KEY unique_document (Societe, Nom, Annee)
+#             )
+#             """
+#         )
+#         connection.commit()
+#         logging.info("Base 'cmf' et table 'document' prêtes.")
+#         print("Base 'cmf' et table 'document' prêtes.")
+#         return connection, cursor
+#     except Error as e:
+#         logging.error(f"Erreur création base : {e}")
+#         print(f"Erreur création base : {e}")
+#         return None, None
 
 
 def normalize_url(url: str) -> str:
@@ -167,48 +168,48 @@ def extract_year_from_text(text: str):
     return None
 
 
-def check_document_exists(cursor, societe, nom, annee: int) -> bool:
-    try:
-        query = "SELECT COUNT(*) FROM document WHERE Societe = %s AND Nom = %s AND Annee = %s"
-        cursor.execute(query, (societe, nom, annee))
-        return (cursor.fetchone()[0] or 0) > 0
-    except Error as e:
-        logging.error(f"Erreur vérification document : {e}")
-        print(f"Erreur vérification document : {e}")
-        return False
+# def check_document_exists(cursor, societe, nom, annee: int) -> bool:
+#     try:
+#         query = "SELECT COUNT(*) FROM document WHERE Societe = %s AND Nom = %s AND Annee = %s"
+#         cursor.execute(query, (societe, nom, annee))
+#         return (cursor.fetchone()[0] or 0) > 0
+#     except Error as e:
+#         logging.error(f"Erreur vérification document : {e}")
+#         print(f"Erreur vérification document : {e}")
+#         return False
 
 
-def insert_pdf_info_cmf(connection, cursor, societe, nom_document, annee, url) -> bool:
-    try:
-        normalized_url = normalize_url(url)
-        annee_int = int(annee)
-
-        if not (2015 <= annee_int <= 2025):
-            logging.info(f"Document {nom_document} ({annee}) ignoré (hors 2015-2025)")
-            print(f"Document {nom_document} ({annee}) ignoré (hors 2015-2025)")
-            return False
-
-        if check_document_exists(cursor, societe, nom_document, annee_int):
-            logging.info(f"Document {nom_document} ({annee}) existe déjà")
-            print(f"Document {nom_document} ({annee}) existe déjà")
-            return False
-
-        cursor.execute(
-            """
-            INSERT INTO document (Societe, Nom, Annee, URL)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (societe, nom_document, annee_int, normalized_url),
-        )
-        connection.commit()
-        logging.info(f"AJOUTÉ : {nom_document} ({annee})")
-        print(f"AJOUTÉ : {nom_document} ({annee})")
-        return True
-
-    except Error as e:
-        logging.error(f"Erreur insertion : {e}")
-        print(f"Erreur insertion : {e}")
-        return False
+# def insert_pdf_info_cmf(connection, cursor, societe, nom_document, annee, url) -> bool:
+#     try:
+#         normalized_url = normalize_url(url)
+#         annee_int = int(annee)
+#
+#         if not (2015 <= annee_int <= 2025):
+#             logging.info(f"Document {nom_document} ({annee}) ignoré (hors 2015-2025)")
+#             print(f"Document {nom_document} ({annee}) ignoré (hors 2015-2025)")
+#             return False
+#
+#         if check_document_exists(cursor, societe, nom_document, annee_int):
+#             logging.info(f"Document {nom_document} ({annee}) existe déjà")
+#             print(f"Document {nom_document} ({annee}) existe déjà")
+#             return False
+#
+#         cursor.execute(
+#             """
+#             INSERT INTO document (Societe, Nom, Annee, URL)
+#             VALUES (%s, %s, %s, %s)
+#             """,
+#             (societe, nom_document, annee_int, normalized_url),
+#         )
+#         connection.commit()
+#         logging.info(f"AJOUTÉ : {nom_document} ({annee})")
+#         print(f"AJOUTÉ : {nom_document} ({annee})")
+#         return True
+#
+#     except Error as e:
+#         logging.error(f"Erreur insertion : {e}")
+#         print(f"Erreur insertion : {e}")
+#         return False
 
 
 # ---------------------------------------------- Utilitaires ----------------------------------------------
@@ -1571,17 +1572,17 @@ def main():
     # 1) Télécharger le PDF ciblé (société + année + type document)
     pdf_path, pdf_url, pdf_nom_reel = fetch_pdf_for_societe_annee(SOCIETE, ANNEE, DOC_NAMES_ACCEPTES)
 
-    # 2) DB
-    connection, cursor = create_cmf_database_and_table()
-    if not connection or not cursor:
-        logging.error("Échec connexion base")
-        print("Échec connexion base")
-        return
+    # ── 2) DB COMMENTED OUT ──
+    # connection, cursor = create_cmf_database_and_table()
+    # if not connection or not cursor:
+    #     logging.error("Échec connexion base")
+    #     print("Échec connexion base")
+    #     return
 
     try:
-        # 3) Insérer l'info du PDF téléchargé
-        if pdf_url and pdf_nom_reel:
-            insert_pdf_info_cmf(connection, cursor, SOCIETE, pdf_nom_reel, ANNEE, pdf_url)
+        # ── 3) Insert PDF info COMMENTED OUT ──
+        # if pdf_url and pdf_nom_reel:
+        #     insert_pdf_info_cmf(connection, cursor, SOCIETE, pdf_nom_reel, ANNEE, pdf_url)
 
         # 4) Stop si pas de PDF
         if not (pdf_path and os.path.exists(pdf_path)):
@@ -1675,15 +1676,16 @@ def main():
         logging.error(f"ERREUR GLOBALE : {str(e)}")
         print(f"\n=== ERREUR GLOBALE : {str(e)} ===")
 
-    finally:
-        try:
-            if connection and connection.is_connected():
-                cursor.close()
-                connection.close()
-                logging.info("Connexion MySQL fermée")
-                print("\n=== MySQL fermé ===")
-        except Exception:
-            pass
+    # ── MySQL cleanup COMMENTED OUT ──
+    # finally:
+    #     try:
+    #         if connection and connection.is_connected():
+    #             cursor.close()
+    #             connection.close()
+    #             logging.info("Connexion MySQL fermée")
+    #             print("\n=== MySQL fermé ===")
+    #     except Exception:
+    #         pass
 
 
 
@@ -1704,5 +1706,3 @@ if __name__ == "__main__":
         ANNEE = int(sys.argv[2])
 
     sys.exit(int(main() or 0))
-
-

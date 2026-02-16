@@ -2,127 +2,361 @@ import re
 from config.document_structure import get_subcategory, CP_SUBCATEGORIES, PA_SUBCATEGORIES, PARENT_CODES
 from src.utils.helpers import clean_number, extract_trailing_numbers
 
+_PARENT_CODES_SET = set(PARENT_CODES)
 
-def _is_purely_numeric_row(row_data):
+
+def _is_numeric(value):
+    """Check if a string represents a number, including space-separated like '45 000 000'."""
+    s = str(value).strip()
+    if not s or s == '-':
+        return False
+    s = s.replace('\u00a0', '').replace(' ', '').replace(',', '.').replace('\xa0', '')
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════
+# RAW DATA PRE-PROCESSING
+# ══════════════════════════════════════════════════════════════════
+
+def _preprocess_raw_data(raw_data):
     """
-    Check if ALL non-empty cells in the row are numeric (or a parent code).
-    These are parent total rows with just values, no description.
+    Clean up raw Camelot output. Handles:
+      A) Cross-row code splits: ['P', '482797'...] + ['A2 Provisions...'] → ['PA2 Provisions...', '482797'...]
+      B) Backward merge: value-only row + text-only row → merged (PA14 gets values from preceding row)
+      C) Forward merge: text-only row + value-only row → merged
+      D) Within-row code splits: ['P', 'A2 Prov...'] → ['PA2 Prov...', '']
+      E) Consecutive duplicate removal (e.g. CP5 appearing twice)
     """
-    has_value = False
-    for cell in row_data:
+    if not raw_data:
+        return raw_data
+
+    rows = [[str(cell) if cell is not None else "" for cell in row] for row in raw_data]
+
+    merged = []
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+
+        if not any(cell.strip() for cell in row):
+            i += 1
+            continue
+
+        # ── Fix A: Cross-row code split ──
+        # ROW N:   ['P', '482 797', '518 176', '', '']
+        # ROW N+1: ['A2 Provisions pour autres risques et Charges', '', '', '', '']
+        # → ['PA2 Provisions pour autres risques et Charges', '482 797', '518 176', '', '']
+        if i + 1 < len(rows):
+            col0 = row[0].strip()
+            next_row = rows[i + 1]
+            next_col0 = next_row[0].strip()
+
+            if (len(col0) <= 2
+                    and col0 in ('P', 'C', 'PA', 'CP', 'IM')
+                    and next_col0
+                    and re.match(r'^(PA\d+|CP\d+|IMCP\d*|A\d+|P\d+)',
+                                 col0 + next_col0.split()[0])):
+                new_row = list(row)
+                new_row[0] = col0 + next_col0
+                for j in range(1, len(next_row)):
+                    ns = next_row[j].strip()
+                    if ns and j < len(new_row) and not new_row[j].strip():
+                        new_row[j] = next_row[j]
+                row = new_row
+                i += 1
+
+        # ── Fix D: Within-row code split ──
+        row = _rejoin_split_codes_in_row(row)
+
+        # ── Fix C: Forward merge (text-only + value-only) ──
+        if i + 1 < len(rows):
+            next_row = rows[i + 1]
+            fwd = _try_merge_forward(row, next_row)
+            if fwd:
+                row = fwd
+                i += 1
+
+        # ── Fix B: Backward merge (value-only + text-only with code) ──
+        if i + 1 < len(rows):
+            next_row = rows[i + 1]
+            bwd = _try_merge_backward(row, next_row)
+            if bwd:
+                rows[i + 1] = bwd
+                i += 1
+                continue  # Skip current value-only row
+
+        merged.append(row)
+        i += 1
+
+    # ── Fix E: Remove consecutive duplicates ──
+    deduped = []
+    for row in merged:
+        if not any(cell.strip() for cell in row):
+            continue
+        if deduped and _rows_are_duplicate(deduped[-1], row):
+            continue
+        deduped.append(row)
+
+    return deduped
+
+
+def _rejoin_split_codes_in_row(row):
+    """Fix codes split across adjacent cells within a row."""
+    if len(row) < 2:
+        return row
+    row = list(row)
+    for j in range(len(row) - 1):
+        cell = row[j].strip()
+        next_cell = row[j + 1].strip()
+        if not cell or not next_cell:
+            continue
+        if _is_numeric(next_cell):
+            continue
+        candidate = cell + next_cell.split()[0]
+        if re.match(r'^(PA\d+[A-Z]?\d*|CP\d+|IMCP\d*)', candidate):
+            row[j] = cell + next_cell
+            row[j + 1] = ""
+            break
+    return row
+
+
+def _try_merge_forward(current_row, next_row):
+    """Merge if current=text-only, next=value-only."""
+    curr_text, curr_val = False, False
+    for cell in current_row:
+        s = cell.strip()
+        if not s: continue
+        if _is_numeric(s): curr_val = True
+        else: curr_text = True
+
+    next_text, next_val = False, False
+    for cell in next_row:
+        s = cell.strip()
+        if not s: continue
+        if _is_numeric(s): next_val = True
+        elif s not in _PARENT_CODES_SET: next_text = True
+
+    if curr_text and not curr_val and next_val and not next_text:
+        merged = list(current_row)
+        for j, cell in enumerate(next_row):
+            s = cell.strip()
+            if s and j < len(merged):
+                if not merged[j].strip():
+                    merged[j] = cell
+                else:
+                    merged[j] = merged[j] + " " + cell
+            elif s:
+                merged.append(cell)
+        return merged
+    return None
+
+
+def _try_merge_backward(current_row, next_row):
+    """
+    Merge if current=value-only, next=text-only with a code.
+    ROW N:   ['', '28 000 000', '15 000 000', '', '']
+    ROW N+1: ['PA14 Dettes Etab...', '', '', '', '']
+    → ['PA14 Dettes Etab...', '28 000 000', '15 000 000', '', '']
+    """
+    curr_has_text, curr_has_value = False, False
+    for cell in current_row:
+        s = cell.strip()
+        if not s: continue
+        if _is_numeric(s): curr_has_value = True
+        elif s not in _PARENT_CODES_SET: curr_has_text = True
+
+    next_has_text, next_has_value = False, False
+    next_col0 = next_row[0].strip() if next_row else ""
+    for cell in next_row:
+        s = cell.strip()
+        if not s: continue
+        if _is_numeric(s): next_has_value = True
+        else: next_has_text = True
+
+    has_code = bool(re.match(r'^(PA|CP|IMCP)', next_col0))
+    if curr_has_value and not curr_has_text and next_has_text and not next_has_value and has_code:
+        merged = list(next_row)
+        for j, cell in enumerate(current_row):
+            s = cell.strip()
+            if s and _is_numeric(s) and j < len(merged) and not merged[j].strip():
+                merged[j] = cell
+        return merged
+    return None
+
+
+def _rows_are_duplicate(row1, row2):
+    cells1 = [str(c).strip() for c in row1 if str(c).strip()]
+    cells2 = [str(c).strip() for c in row2 if str(c).strip()]
+    return cells1 == cells2 and len(cells1) > 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# TEXT / VALUE SEPARATION
+# ══════════════════════════════════════════════════════════════════
+
+def _get_text_and_values(row_data):
+    """
+    Separate text columns from value columns.
+    Stops at the first numeric cell.
+
+    ['CP1 Capital social', '45 000 000', '45 000 000', '', '']
+     ^ TEXT               ^ NUMERIC → STOP
+
+    Returns ("CP1 Capital social", 1)
+    """
+    text_parts = []
+    first_value_idx = len(row_data)
+    for i, cell in enumerate(row_data):
         cell_str = str(cell).strip()
         if not cell_str:
             continue
-        if cell_str in PARENT_CODES:
+        if _is_numeric(cell_str):
+            first_value_idx = i
+            break
+        if cell_str in _PARENT_CODES_SET and i > 0:
             continue
-        cleaned = clean_number(cell)
-        if isinstance(cleaned, (int, float)):
-            has_value = True
-        else:
-            return False
+        text_parts.append(cell_str)
+    return " ".join(text_parts), first_value_idx
+
+
+def _is_purely_numeric_row(row_data):
+    has_value = False
+    for cell in row_data:
+        cell_str = str(cell).strip()
+        if not cell_str: continue
+        if cell_str in _PARENT_CODES_SET: continue
+        if _is_numeric(cell_str): has_value = True
+        else: return False
     return has_value
 
 
 def _combine_all_text(row_data):
-    """
-    Combine ALL non-numeric, non-empty cells from a row into a single string.
-    Handles text like 'TOTAL DES CAPITAUX PROPRES ET DU PASSIF' split across columns.
-    """
     parts = []
     for cell in row_data:
         cell_str = str(cell).strip()
-        if not cell_str:
-            continue
-        cleaned = clean_number(cell)
-        if not isinstance(cleaned, (int, float)):
+        if not cell_str: continue
+        if not _is_numeric(cell_str):
             parts.append(cell_str)
     return ' '.join(parts)
 
 
-def detect_hierarchy_level_passif(row_data, current_section=None):
+# ══════════════════════════════════════════════════════════════════
+# TOTAL CLASSIFICATION
+# ══════════════════════════════════════════════════════════════════
 
+def _classify_total(text_lower):
+    if ('total des capitaux propres et du passif' in text_lower
+            or ('total des capitaux' in text_lower and 'passif' in text_lower)):
+        return 'TOTAL_GENERAL'
+    stripped = re.sub(r'[^a-zéèêà\s]', '', text_lower).strip()
+    if stripped == 'total':
+        return 'TOTAL_GENERAL'
+    if ('total capitaux propres avant affectation' in text_lower
+            or 'total cp av affectation' in text_lower):
+        return 'CP_AFFECTATION'
+    if ('total capitaux propres avant r' in text_lower
+            or 'total cp av r' in text_lower):
+        return 'CP_RESULTAT'
+    if 'total capitaux propres consolid' in text_lower:
+        return 'CP_CONSOLIDE'
+    if 'total du passif' in text_lower:
+        return 'TOTAL_PASSIF'
+    return 'OTHER'
+
+
+# ══════════════════════════════════════════════════════════════════
+# HIERARCHY DETECTION
+# ══════════════════════════════════════════════════════════════════
+
+def detect_hierarchy_level_passif(row_data, current_section=None):
     if not row_data or len(row_data) == 0:
         return None
 
-    first_col = str(row_data[0]).strip() if row_data[0] else ""
-    second_col = str(row_data[1]).strip() if len(row_data) > 1 and row_data[1] else ""
-
-    # Combine first two columns for code detection
-    combined = f"{first_col} {second_col}".strip()
+    combined, first_value_idx = _get_text_and_values(row_data)
     combined_lower = combined.lower()
-
-    # Combine ALL text columns for keyword matching (totals, sections)
     full_text = _combine_all_text(row_data)
     full_text_lower = full_text.lower()
 
-    # EARLY EXIT: value-only rows (parent totals) - let post-processing handle them
     if _is_purely_numeric_row(row_data):
         return None
 
-    # Level 0: Main title (CAPITAUX PROPRES ET LE PASSIF) but NOT the grand total
+    # Title
     if ("capitaux propres et" in full_text_lower
             and "passif" in full_text_lower
             and "total" not in full_text_lower):
         return (0, "", full_text, False, "TITRE", "", [])
 
-    # Level 1: Main sections (CAPITAUX PROPRES:, PASSIF:)
+    # Section headers
     if re.match(r'^(CAPITAUX PROPRES|PASSIF):?$', combined, re.IGNORECASE):
         section = "CAPITAUX PROPRES" if "capitaux propres" in combined_lower else "PASSIF"
         return (1, "", combined, False, "SECTION", section, [])
 
-    # Main totals - use full_text for matching to catch multi-column text
-    # Check TOTAL GENERAL first since it also contains other total keywords
-    if "total" in full_text_lower:
-        clean_desc, extra_vals = extract_trailing_numbers(full_text)
+    if re.match(r'^CP\s+Capitaux\s+Propres$', combined, re.IGNORECASE):
+        return (1, "", combined, False, "SECTION", "CAPITAUX PROPRES", [])
 
-        if "total des capitaux propres et du passif" in full_text_lower:
-            return (1, "", clean_desc, True, "TOTAL G\u00c9N\u00c9RAL", "", extra_vals)
-        elif ("total capitaux propres avant r\u00e9sultat" in full_text_lower
-                or "total capitaux propres avant resultat" in full_text_lower):
+    # Totals
+    if "total" in full_text_lower:
+        clean_desc, extra_vals = extract_trailing_numbers(combined)
+        total_type = _classify_total(full_text_lower)
+        if total_type == 'TOTAL_GENERAL':
+            return (1, "", clean_desc, True, "TOTAL GÉNÉRAL", "", extra_vals)
+        elif total_type == 'CP_RESULTAT':
             return (2, "", clean_desc, True, "TOTAL",
-                    "Capitaux Propres - Avant R\u00e9sultat", extra_vals)
-        elif "total capitaux propres avant affectation" in full_text_lower:
+                    "Capitaux Propres - Avant Résultat", extra_vals)
+        elif total_type == 'CP_CONSOLIDE':
+            return (2, "", clean_desc, True, "TOTAL",
+                    "Capitaux Propres - Consolidés", extra_vals)
+        elif total_type == 'CP_AFFECTATION':
             return (2, "", clean_desc, True, "TOTAL",
                     "Capitaux Propres - Avant Affectation", extra_vals)
-        elif "total du passif" in full_text_lower:
+        elif total_type == 'TOTAL_PASSIF':
             return (2, "", clean_desc, True, "TOTAL", "Total Passif", extra_vals)
         else:
             category = current_section if current_section else "TOTAL"
             return (3, "", clean_desc, True, "TOTAL", category, extra_vals)
 
-    # Level 2: PA codes (PASSIF subsections)
-    if re.match(r'^(PA\d+|PA\d+[A-Z]?\d*)\s+', combined):
+    # PA codes
+    if re.match(r'^(PA\d+[A-Z]?\d*)\s+', combined):
         code_match = re.match(r'^(PA\d+[A-Z]?\d*)\s+(.+)', combined)
         if code_match:
             code = code_match.group(1)
             desc_raw = code_match.group(2)
             desc, extra_vals = extract_trailing_numbers(desc_raw)
             subcategory = get_subcategory(code)
-
-            if code in PARENT_CODES:
+            if code in _PARENT_CODES_SET:
                 return (2, code, desc, False, "PASSIF", subcategory, extra_vals)
             else:
                 return (3, code, desc, False, "PASSIF", subcategory, extra_vals)
 
-    # Level 2: CP codes (Capital)
-    if re.match(r'^(CP\d+)\s+', combined):
-        code_match = re.match(r'^(CP\d+)\s+(.+)', combined)
-        if code_match:
-            code = code_match.group(1)
-            desc_raw = code_match.group(2)
-            desc, extra_vals = extract_trailing_numbers(desc_raw)
-            subcategory = get_subcategory(code)
-            return (2, code, desc, False, "CAPITAUX PROPRES", subcategory, extra_vals)
+    # CP codes (also handles CP2'-, IMCP-, CP6'-)
+    cp_match = re.match(r'^((?:CP|IMCP)\d*[\'\'\-]*)\s+(.+)', combined)
+    if cp_match:
+        code = cp_match.group(1)
+        desc_raw = cp_match.group(2)
+        desc, extra_vals = extract_trailing_numbers(desc_raw)
+        clean_code = code.rstrip("'-")
+        subcategory = get_subcategory(clean_code)
+        return (2, clean_code, desc, False, "CAPITAUX PROPRES", subcategory, extra_vals)
 
-    # Code alone (CP or PA)
+    # Code alone in first column
+    first_col = str(row_data[0]).strip() if row_data[0] else ""
     if re.match(r'^(CP\d+|PA\d+[A-Z]?\d*)$', first_col):
+        desc = ""
+        for cell in row_data[1:]:
+            cell_str = str(cell).strip()
+            if cell_str and not _is_numeric(cell_str) and cell_str not in _PARENT_CODES_SET:
+                desc = cell_str
+                break
         if first_col.startswith('CP'):
-            return (2, first_col, second_col, False, "CAPITAUX PROPRES", "", [])
+            return (2, first_col, desc, False, "CAPITAUX PROPRES", "", [])
         else:
-            return (2, first_col, second_col, False, "PASSIF", "", [])
+            return (2, first_col, desc, False, "PASSIF", "", [])
 
-    # Description line without code (level 2 by default)
-    if first_col and not re.match(r'^(CP|PA)', first_col):
+    # Description line without code
+    if combined and not re.match(r'^(CP|PA)', combined):
         desc, extra_vals = extract_trailing_numbers(combined)
         category = current_section if current_section else "AUTRE"
         return (2, "", desc, False, category, "", extra_vals)
@@ -130,8 +364,11 @@ def detect_hierarchy_level_passif(row_data, current_section=None):
     return None
 
 
+# ══════════════════════════════════════════════════════════════════
+# POST-PROCESSING HELPERS
+# ══════════════════════════════════════════════════════════════════
+
 def _extract_numeric_values_from_row(row):
-    """Extract all numeric values from a row, regardless of position."""
     values = []
     for cell in row:
         cleaned = clean_number(cell)
@@ -141,46 +378,42 @@ def _extract_numeric_values_from_row(row):
 
 
 def _find_parent_code_in_row(row):
-    """Check if any cell contains exactly a parent code."""
     for cell in row:
         cell_str = str(cell).strip()
-        if cell_str in PARENT_CODES:
+        if cell_str in _PARENT_CODES_SET:
             return cell_str
     return None
 
 
 def _find_parent_for_code(code):
-    """
-    Given a code like PA710, find its parent in PARENT_CODES.
-    Tries progressively shorter prefixes: PA71 -> PA7.
-    """
     if not code:
         return None
     for length in range(len(code) - 1, 1, -1):
         prefix = code[:length]
-        if prefix in PARENT_CODES:
+        if prefix in _PARENT_CODES_SET:
             return prefix
     return None
 
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN ENTRY POINT
+# ══════════════════════════════════════════════════════════════════
 
 def structure_hierarchical_data_passif(raw_data):
     """
     Structure raw table data into hierarchical format.
 
-    Two-pass approach:
-      Pass 1: Parse all rows normally. Value-only rows are collected separately.
-              Track which parents actually have children in the data.
-      Pass 2: Attribute each value-only total row to the correct parent.
-              Key rule: if a parent has inline values but NO children,
-              the value-only row belongs to a HIGHER parent (climb up).
-              e.g. PA72 has values but no children -> climb to PA7.
+    Pipeline:
+      0. Pre-process: fix split codes, merge incomplete rows, deduplicate
+      1. Parse all rows. Value-only rows collected separately.
+      2. Attribute each value-only total row to the correct parent.
     """
-    # -- Pass 1: Parse all rows --
+    raw_data = _preprocess_raw_data(raw_data)
+
     hierarchical_rows = []
     unmatched_rows = []
     current_section = None
     last_code_seen = None
-    # Track which parent codes have children appearing in the data
     parents_with_children = set()
 
     for row in raw_data:
@@ -195,8 +428,6 @@ def structure_hierarchical_data_passif(raw_data):
             if category == "SECTION":
                 current_section = subcategory
 
-            # Track parent-child relationships:
-            # If this code is a child of any parent, mark that parent
             if code and not is_total:
                 for parent_code in PARENT_CODES:
                     if code.startswith(parent_code) and code != parent_code:
@@ -209,31 +440,26 @@ def structure_hierarchical_data_passif(raw_data):
             if extra_values:
                 values.extend(extra_values)
 
-            for cell in row[2:]:
+            _, first_val_idx = _get_text_and_values(row)
+            for cell in row[first_val_idx:]:
                 cleaned = clean_number(cell)
-                if cleaned != '':
+                if isinstance(cleaned, (int, float)):
                     values.append(cleaned)
 
-            if not values and len(row) >= 2:
+            if not values:
                 for cell in row:
                     cleaned = clean_number(cell)
                     if isinstance(cleaned, (int, float)):
                         values.append(cleaned)
 
             hierarchical_rows.append({
-                'level': level,
-                'code': code,
-                'description': description,
-                'is_total': is_total,
-                'category': category,
-                'subcategory': subcategory,
-                'values': values
+                'level': level, 'code': code, 'description': description,
+                'is_total': is_total, 'category': category,
+                'subcategory': subcategory, 'values': values
             })
         else:
-            # Value-only row. Store with context for Pass 2.
             values = _extract_numeric_values_from_row(row)
             parent_code_in_row = _find_parent_code_in_row(row)
-
             if values:
                 unmatched_rows.append({
                     'values': values,
@@ -241,60 +467,41 @@ def structure_hierarchical_data_passif(raw_data):
                     'last_code_before': last_code_seen,
                 })
 
-    # -- Pass 2: Attribute value-only rows to their parent headers --
-
-    # Build index of parent headers
+    # ── Attribute value-only rows to parent headers ──
     parent_header_indices = {}
     for i, row in enumerate(hierarchical_rows):
         code = row.get('code', '')
-        if code in PARENT_CODES and not row['is_total']:
+        if code in _PARENT_CODES_SET and not row['is_total']:
             parent_header_indices[code] = i
 
-    # Track which parents get assigned during this pass
     parents_assigned = set()
 
     for unmatched in unmatched_rows:
         target_parent = None
 
         if unmatched['explicit_parent']:
-            # Explicit parent code in the row (e.g. "PA3" in Note column)
             target_parent = unmatched['explicit_parent']
         else:
             last_code = unmatched['last_code_before']
             if last_code:
-                # Find the closest parent for this code
-                if last_code in PARENT_CODES:
-                    candidate = last_code
-                else:
-                    candidate = _find_parent_for_code(last_code)
-
-                # Climb up if:
-                #   - candidate already assigned a total, OR
-                #   - candidate has inline values but NO children
-                #     (e.g. PA72 has "3,515,116" but no PA72x children,
-                #      so the total row belongs to PA7, not PA72)
+                candidate = last_code if last_code in _PARENT_CODES_SET else _find_parent_for_code(last_code)
                 while candidate:
                     if candidate in parents_assigned:
                         candidate = _find_parent_for_code(candidate)
                     elif candidate in parent_header_indices:
                         header_idx = parent_header_indices[candidate]
-                        has_inline_values = bool(
-                            hierarchical_rows[header_idx]['values'])
+                        has_inline = bool(hierarchical_rows[header_idx]['values'])
                         has_children = candidate in parents_with_children
-
-                        if has_inline_values and not has_children:
-                            # Leaf parent with values -> total belongs higher
+                        if has_inline and not has_children:
                             candidate = _find_parent_for_code(candidate)
                         else:
                             break
                     else:
                         break
-
                 target_parent = candidate
 
         if target_parent and target_parent in parent_header_indices:
             header_idx = parent_header_indices[target_parent]
-            # Always overwrite: the total row is authoritative
             hierarchical_rows[header_idx]['values'] = unmatched['values']
             parents_assigned.add(target_parent)
 
