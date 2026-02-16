@@ -1,37 +1,16 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 
 class ValidatorPassifs:
     """
     Validates PASSIF table by checking that every parent = sum(children).
-
-    Rules checked:
-    ─── CAPITAUX PROPRES ───
-      Total CP Av Résultat    = CP1 + CP2 + CP3 + CP4 + CP5
-      Total CP Av Affectation = CP1 + CP2 + CP3 + CP4 + CP5 + CP6
-
-    ─── PASSIF ───
-      PA1  = PA13 + PA14
-      PA2  = PA23  (+ any other PA2x children present)
-      PA3  = PA310 + PA320 + PA330 + PA331 + PA340 + PA341 + PA350 + PA360 + PA361
-      PA5  = standalone (no children to check)
-      PA6  = PA61 + PA62 + PA63
-      PA62 = PA622
-      PA63 = PA631 + PA632 + PA633 + PA634
-      PA7  = PA71 + PA73  (+ PA72 if present)
-      PA71 = PA710 + PA711 + PA712
-
-    ─── TOTALS ───
-      Total Passif         = PA1 + PA2 + PA3 + PA5 + PA6 + PA7
-      Total CP et Passif   = (CP1+...+CP6) + (PA1+PA2+PA3+PA5+PA6+PA7)
+    Returns detailed breakdown on failure showing each child's contribution.
     """
 
-    # Parent → list of children codes
     PARENT_CHILDREN = {
         'PA1':  ['PA13', 'PA14'],
         'PA2':  ['PA23'],
         'PA3':  ['PA310', 'PA320', 'PA330', 'PA331', 'PA340', 'PA341', 'PA350', 'PA360', 'PA361'],
-        # PA5 has no children
         'PA6':  ['PA61', 'PA62', 'PA63'],
         'PA62': ['PA622'],
         'PA63': ['PA631', 'PA632', 'PA633', 'PA634'],
@@ -44,16 +23,10 @@ class ValidatorPassifs:
     TOP_LEVEL_PA = ['PA1', 'PA2', 'PA3', 'PA5', 'PA6', 'PA7']
 
     def __init__(self, extracted_data_context: Optional[Dict] = None, error_margin: float = 1.0):
-        """
-        Args:
-            extracted_data_context: dict of {code: {'value': float}} from the Excel
-            error_margin: allowed rounding difference (default 1.0 for integer rounding)
-        """
         self.ctx = extracted_data_context or {}
         self.error_margin = error_margin
 
     def _get_value(self, code: str) -> Optional[float]:
-        """Get value for a code from context. Returns None if not found."""
         entry = self.ctx.get(code)
         if entry is None:
             return None
@@ -65,181 +38,209 @@ class ValidatorPassifs:
         except (TypeError, ValueError):
             return None
 
-    def _sum_children(self, children: list) -> Optional[float]:
-        """
-        Sum values of children codes. 
-        Returns None if no children found at all.
-        Missing children treated as 0 (they might not exist in this company).
-        """
-        total = 0.0
-        found_any = False
-        for code in children:
-            val = self._get_value(code)
-            if val is not None:
-                total += val
-                found_any = True
-        return total if found_any else None
-
     def _get_first_numeric_value(self, values) -> Optional[float]:
-        """Get first numeric value from a list."""
         if not values:
             return None
         for v in values:
             try:
-                f = float(v)
-                return f
+                return float(v)
             except (TypeError, ValueError):
                 continue
         return None
 
     def _close_enough(self, a: float, b: float) -> bool:
-        """Check if two values are within error margin."""
         return abs(a - b) <= self.error_margin
 
+    def _build_breakdown(self, children: list) -> Tuple[Optional[float], str]:
+        """
+        Sum children and build a readable breakdown string.
+        Returns (total, breakdown_str)
+        Example: (223660142, "PA310=61,840,376 + PA330=677,867 + PA331=151,500,161 + ...")
+        """
+        total = 0.0
+        found_any = False
+        parts = []
+
+        for code in children:
+            val = self._get_value(code)
+            if val is not None:
+                total += val
+                found_any = True
+                parts.append(f"{code}={val:,.0f}")
+            # Skip codes with None (not present in this company)
+
+        breakdown = " + ".join(parts) if parts else "no children found"
+        return (total if found_any else None), breakdown
+
     # ══════════════════════════════════════════════════════════════
-    # PARENT-CHILD VALIDATION (PA codes)
+    # VALIDATION RULES - each returns (passed: bool, detail: str)
     # ══════════════════════════════════════════════════════════════
 
-    def _validate_parent_children(self, code: str, parent_value: float) -> bool:
-        """
-        Check: parent_value == sum(children values from context)
-        Returns True if:
-          - Code is not a parent (no rule to check)
-          - No children found in context (can't validate)
-          - Sum matches within margin
-        Returns False if sum doesn't match.
-        """
+    def _check_parent_children(self, code: str, parent_value: float) -> Tuple[bool, str]:
+        """Check: parent_value == sum(children)"""
         children = self.PARENT_CHILDREN.get(code)
         if not children:
-            return True  # Not a parent, nothing to check
+            return True, ""
 
-        children_sum = self._sum_children(children)
+        children_sum, breakdown = self._build_breakdown(children)
         if children_sum is None:
-            return True  # No children data, can't validate
+            return True, ""
 
-        return self._close_enough(parent_value, children_sum)
+        if self._close_enough(parent_value, children_sum):
+            return True, ""
 
-    # ══════════════════════════════════════════════════════════════
-    # CP TOTAL VALIDATIONS
-    # ══════════════════════════════════════════════════════════════
+        diff = parent_value - children_sum
+        return False, (
+            f"{code}={parent_value:,.0f} ≠ children sum={children_sum:,.0f} "
+            f"(diff={diff:+,.0f}). Breakdown: {breakdown}"
+        )
 
-    def _validate_cp_avant_resultat(self, description: str, row_value: float) -> bool:
-        """Total CP Av Résultat = CP1 + CP2 + CP3 + CP4 + CP5"""
+    def _check_cp_avant_resultat(self, description: str, row_value: float) -> Tuple[bool, str]:
         desc_lower = description.lower()
         if 'avant r' not in desc_lower and 'av r' not in desc_lower:
-            return True  # Not this total row
+            return True, ""
 
-        expected = self._sum_children(self.CP_BEFORE_RESULT)
+        expected, breakdown = self._build_breakdown(self.CP_BEFORE_RESULT)
         if expected is None:
-            return True
+            return True, ""
 
-        return self._close_enough(row_value, expected)
+        if self._close_enough(row_value, expected):
+            return True, ""
 
-    def _validate_cp_avant_affectation(self, description: str, row_value: float) -> bool:
-        """Total CP Av Affectation = CP1 + CP2 + CP3 + CP4 + CP5 + CP6"""
+        diff = row_value - expected
+        return False, (
+            f"Total CP Av Résultat={row_value:,.0f} ≠ expected={expected:,.0f} "
+            f"(diff={diff:+,.0f}). Breakdown: {breakdown}"
+        )
+
+    def _check_cp_avant_affectation(self, description: str, row_value: float) -> Tuple[bool, str]:
         desc_lower = description.lower()
         if 'avant affectation' not in desc_lower and 'av affectation' not in desc_lower:
-            return True
+            return True, ""
 
-        expected = self._sum_children(self.CP_BEFORE_AFFECTATION)
+        expected, breakdown = self._build_breakdown(self.CP_BEFORE_AFFECTATION)
         if expected is None:
-            return True
+            return True, ""
 
-        return self._close_enough(row_value, expected)
+        if self._close_enough(row_value, expected):
+            return True, ""
 
-    def _validate_cp_consolide(self, description: str, row_value: float) -> bool:
-        """Total capitaux propres consolidés = CP1 + CP2 + CP3 + CP4 + CP5 + CP6"""
+        diff = row_value - expected
+        return False, (
+            f"Total CP Av Affectation={row_value:,.0f} ≠ expected={expected:,.0f} "
+            f"(diff={diff:+,.0f}). Breakdown: {breakdown}"
+        )
+
+    def _check_cp_consolide(self, description: str, row_value: float) -> Tuple[bool, str]:
         desc_lower = description.lower()
         if 'consolid' not in desc_lower:
-            return True
+            return True, ""
 
-        expected = self._sum_children(self.CP_BEFORE_AFFECTATION)
+        expected, breakdown = self._build_breakdown(self.CP_BEFORE_AFFECTATION)
         if expected is None:
-            return True
+            return True, ""
 
-        return self._close_enough(row_value, expected)
+        if self._close_enough(row_value, expected):
+            return True, ""
 
-    # ══════════════════════════════════════════════════════════════
-    # PASSIF TOTAL VALIDATIONS
-    # ══════════════════════════════════════════════════════════════
+        diff = row_value - expected
+        return False, (
+            f"Total CP Consolidés={row_value:,.0f} ≠ expected={expected:,.0f} "
+            f"(diff={diff:+,.0f}). Breakdown: {breakdown}"
+        )
 
-    def _validate_total_passif(self, description: str, row_value: float) -> bool:
-        """Total du Passif = PA1 + PA2 + PA3 + PA5 + PA6 + PA7"""
+    def _check_total_passif(self, description: str, row_value: float) -> Tuple[bool, str]:
         desc_lower = description.lower()
         if 'total du passif' not in desc_lower:
-            return True
+            return True, ""
 
-        expected = self._sum_children(self.TOP_LEVEL_PA)
+        expected, breakdown = self._build_breakdown(self.TOP_LEVEL_PA)
         if expected is None:
-            return True
+            return True, ""
 
-        return self._close_enough(row_value, expected)
+        if self._close_enough(row_value, expected):
+            return True, ""
 
-    def _validate_total_general(self, description: str, row_value: float) -> bool:
-        """
-        Total des capitaux propres et du passif (or standalone "Total")
-        = CP total + PA total
-        = (CP1+CP2+CP3+CP4+CP5+CP6) + (PA1+PA2+PA3+PA5+PA6+PA7)
-        """
+        diff = row_value - expected
+        return False, (
+            f"Total Passif={row_value:,.0f} ≠ expected={expected:,.0f} "
+            f"(diff={diff:+,.0f}). Breakdown: {breakdown}"
+        )
+
+    def _check_total_general(self, description: str, row_value: float) -> Tuple[bool, str]:
         desc_lower = description.lower()
         is_grand_total = (
             ('capitaux propres' in desc_lower and 'passif' in desc_lower and 'total' in desc_lower)
             or desc_lower.strip() == 'total'
         )
         if not is_grand_total:
-            return True
+            return True, ""
 
-        cp_sum = self._sum_children(self.CP_BEFORE_AFFECTATION)
-        pa_sum = self._sum_children(self.TOP_LEVEL_PA)
+        cp_sum, cp_breakdown = self._build_breakdown(self.CP_BEFORE_AFFECTATION)
+        pa_sum, pa_breakdown = self._build_breakdown(self.TOP_LEVEL_PA)
 
         if cp_sum is None or pa_sum is None:
-            return True
+            return True, ""
 
         expected = cp_sum + pa_sum
-        return self._close_enough(row_value, expected)
+        if self._close_enough(row_value, expected):
+            return True, ""
+
+        diff = row_value - expected
+        return False, (
+            f"Grand Total={row_value:,.0f} ≠ expected={expected:,.0f} "
+            f"(diff={diff:+,.0f}). "
+            f"CP sum={cp_sum:,.0f} ({cp_breakdown}) + "
+            f"PA sum={pa_sum:,.0f} ({pa_breakdown})"
+        )
 
     # ══════════════════════════════════════════════════════════════
     # MAIN VALIDATE METHOD
     # ══════════════════════════════════════════════════════════════
 
-    def validate(self, row: Dict[str, Any]) -> bool:
+    def validate(self, row: Dict[str, Any]) -> Tuple[bool, str]:
         """
-        Validate a single row. The row dict should contain:
-          'code': str (e.g. 'PA3', 'CP1')
-          'description': str (e.g. 'Provisions techniques brutes')
-          'values': list of numeric values [val_2024, val_2023, ...]
+        Validate a single row.
 
-        Returns True if all applicable rules pass, False if any fail.
+        Args:
+            row: dict with 'code', 'description', 'values' keys
+
+        Returns:
+            (passed: bool, detail: str)
+            - If passed: (True, "")
+            - If failed: (False, "PA3=223,660,142 ≠ children sum=261,819,765 ...")
         """
         code = str(row.get('code', '')).strip()
         description = str(row.get('description', ''))
         values = row.get('values', [])
         row_value = self._get_first_numeric_value(values)
 
-        # If no numeric value, can't validate → pass
         if row_value is None:
-            return True
+            return True, ""
 
-        results = []
+        errors = []
 
-        # ── Rule 1: Parent-child sum check (PA codes) ──
-        # If this row's code is a parent, check value == sum(children)
+        # Rule 1: Parent-child sum
         if code:
-            results.append(self._validate_parent_children(code, row_value))
+            ok, detail = self._check_parent_children(code, row_value)
+            if not ok:
+                errors.append(detail)
 
-        # ── Rule 2: CP avant résultat ──
-        results.append(self._validate_cp_avant_resultat(description, row_value))
+        # Rule 2-4: CP totals
+        for check in [self._check_cp_avant_resultat,
+                       self._check_cp_avant_affectation,
+                       self._check_cp_consolide]:
+            ok, detail = check(description, row_value)
+            if not ok:
+                errors.append(detail)
 
-        # ── Rule 3: CP avant affectation ──
-        results.append(self._validate_cp_avant_affectation(description, row_value))
+        # Rule 5-6: Passif totals
+        for check in [self._check_total_passif,
+                       self._check_total_general]:
+            ok, detail = check(description, row_value)
+            if not ok:
+                errors.append(detail)
 
-        # ── Rule 4: CP consolidés ──
-        results.append(self._validate_cp_consolide(description, row_value))
-
-        # ── Rule 5: Total du passif ──
-        results.append(self._validate_total_passif(description, row_value))
-
-        # ── Rule 6: Grand total ──
-        results.append(self._validate_total_general(description, row_value))
-
-        return all(results)
+        if errors:
+            return False, " | ".join(errors)
+        return True, ""

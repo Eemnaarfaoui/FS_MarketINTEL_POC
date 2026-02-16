@@ -35,7 +35,6 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
 
     # ══════════════════════════════════════════════════════════════
     # BUILD CONTEXT: collect all code → value mappings from the data
-    # The validator needs this to check parent = sum(children)
     # ══════════════════════════════════════════════════════════════
     first_year_col = year_cols[0] if year_cols else None
 
@@ -45,7 +44,6 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
         if not code or code == 'nan':
             continue
 
-        # Get the first year column value
         value = None
         if first_year_col:
             raw_val = row.get(first_year_col)
@@ -68,26 +66,28 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
         print(f"  {code}: {v:,.0f}" if v is not None else f"  {code}: None")
 
     # ══════════════════════════════════════════════════════════════
-    # VALIDATE: pass context to validator so rules can check sums
+    # VALIDATE: pass context to validator
     # ══════════════════════════════════════════════════════════════
     validator = ValidatorPassifs(extracted_data_context=extracted_data_context)
 
-    def validate_row(row):
-        # Build a dict the validator understands:
-        #   'description' → from Description column
-        #   'values' → list of year column values
+    results = []
+    details = []
+
+    for _, row in filtered_df.iterrows():
         validator_row = {
             'description': str(row.get('Description', '')),
             'values': [row.get(col) for col in year_cols],
             'code': str(row.get('Code', '')).strip(),
         }
-        result = validator.validate(validator_row)
-        return 'PASS' if result else 'FAIL'
+        passed, detail = validator.validate(validator_row)
+        results.append('PASS' if passed else 'FAIL')
+        details.append(detail if detail else '')
 
-    filtered_df['ValidationResult'] = filtered_df.apply(validate_row, axis=1)
+    filtered_df['ValidationResult'] = results
+    filtered_df['Détail Erreur'] = details
     filtered_df['Assurance'] = COMPANY_NAME
 
-    # Convert year columns to numeric so Excel treats them as numbers
+    # Convert year columns to numeric
     for col in year_cols:
         filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
 
@@ -95,6 +95,19 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
     pass_count = (filtered_df['ValidationResult'] == 'PASS').sum()
     fail_count = (filtered_df['ValidationResult'] == 'FAIL').sum()
     print(f"\n✅ PASS: {pass_count}  ❌ FAIL: {fail_count}")
+
+    # Print failures with detail
+    if fail_count > 0:
+        print(f"\n{'─' * 80}")
+        print("FAILURES:")
+        print(f"{'─' * 80}")
+        for _, row in filtered_df[filtered_df['ValidationResult'] == 'FAIL'].iterrows():
+            code = str(row.get('Code', '')).strip()
+            desc = str(row.get('Description', '')).strip()
+            label = code if code else desc
+            print(f"  ❌ {label}")
+            print(f"     {row['Détail Erreur']}")
+        print(f"{'─' * 80}")
 
     # Save raw data first
     output_path = EXCEL_PATH.replace('.xlsx', '_validated.xlsx')
@@ -113,6 +126,7 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
     pass_font = Font(color="006100", bold=True)
     fail_fill = PatternFill("solid", fgColor="FFC7CE")
     fail_font = Font(color="9C0006", bold=True)
+    detail_font = Font(color="9C0006", size=9)
 
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
@@ -129,6 +143,7 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
         col_map[cell.value] = col_idx
 
     validation_col = col_map.get('ValidationResult')
+    detail_col = col_map.get('Détail Erreur')
     year_col_indices = [col_map[c] for c in year_cols if c in col_map]
 
     # Style headers
@@ -140,6 +155,10 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
 
     # Style data rows
     for row_idx in range(2, ws.max_row + 1):
+        is_fail = False
+        if validation_col:
+            is_fail = ws.cell(row_idx, validation_col).value == 'FAIL'
+
         for col_idx in range(1, ws.max_column + 1):
             cell = ws.cell(row_idx, col_idx)
             cell.border = thin_border
@@ -161,7 +180,22 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
                 val_cell.font = fail_font
             val_cell.alignment = Alignment(horizontal="center")
 
-    # Auto-fit column widths (approximate)
+        # Style detail column — red text, wrap for readability
+        if detail_col:
+            detail_cell = ws.cell(row_idx, detail_col)
+            if detail_cell.value and str(detail_cell.value).strip():
+                detail_cell.font = detail_font
+                detail_cell.fill = PatternFill("solid", fgColor="FFF2CC")  # light yellow
+                detail_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+        # Highlight the entire row background if FAIL
+        if is_fail:
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row_idx, col_idx)
+                if col_idx != validation_col and col_idx != detail_col:
+                    cell.fill = PatternFill("solid", fgColor="FFF2CC")  # light yellow row
+
+    # Auto-fit column widths
     for col_idx in range(1, ws.max_column + 1):
         max_len = 0
         col_letter = ws.cell(1, col_idx).column_letter
@@ -169,7 +203,11 @@ def validate_capitaux_propres_passif(excel_path: str, company_name: str):
             val = ws.cell(row_idx, col_idx).value
             if val:
                 max_len = max(max_len, len(str(val)))
-        ws.column_dimensions[col_letter].width = min(max_len + 4, 45)
+        # Detail column gets extra width
+        if col_idx == detail_col:
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 80)
+        else:
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 45)
 
     # Freeze top row
     ws.freeze_panes = "A2"
