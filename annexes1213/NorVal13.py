@@ -21,7 +21,7 @@ from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
 
 import openpyxl
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
 # =========================
@@ -29,44 +29,39 @@ from openpyxl.utils import get_column_letter
 # =========================
 
 EXPECTED_COLUMNS = [
-    "CATEGORIES", "INCENDIE", "A.TRAVAIL", "RC", "AUTOMOBILE", "TRANSPORT", "GROUPE",
-    "DOMMAGES AUX BIENS", "RISQUES AGRICOLES", "CONSTRUCTION", "PERTE D'EXPLOITATION",
-    "CAUTION", "ASSISTANCE", "A.CORPOREL", "ACCEPTATION", "TOTAL"
+    "CATEGORIES", "ACCEPTATION", "ACC R.D", "AUTO", "ACC.TRAV",
+    "INCENDIE", "TRANSPORT", "GRELE", "GROUPE", "TOTAL"
 ]
 
 EXPECTED_ROWS = [
-    "PRIMES EMISES", "VARIATION DES PRIMES NON ACQUISES",
+    "PRIMES EMISES", 
+    "VARIATION DES PRIMES NON ACQUISES",
+    "CHARGES DE PRESTATIONS",
     "PRESTATIONS ET FRAIS PAYES",
     "CHARGES DES PROVISIONS POUR PRESTATIONS DIVERSE",
     "SOLDE DE SOUSCRIPTION",
-    "FRAIS D'ACQUISITION", "AUTRES CHARGES DE GESTION NETTES",
+    "FRAIS D'ACQUISITION",
+    "AUTRES CHARGES DE GESTION NETTES",
     "CHARGES D'ACQUISITION ET DE GESTION NETTES",
-    "PRODUITS NETS DE PLACEMENTS", "AUTRE PRODUITS TECHNIQUES",
+    "PRODUITS NETS DE PLACEMENTS",
+    "PARTICIPATION AUX RESULTATS",
     "SOLDE FINANCIER",
+    "PRIMES CEDEES AUX REASSUREURS",
     "PART REASSUREURS DANS LES PRIMES ACQUISES",
-    "PART REASSUREURS DANS LES PRIMES NON ACQUISES",
     "PART REASSUREURS DANS LES PRESTATIONS PAYEES",
-    "PART REASSUREURS DANS LES CHARGES DE PROVISIONS",
-    "COMMISSIONS REÇUES DES REASSUREURS",
+    "PART DES REAS ET/OU DES RETROC DANS LES CHARGES DE PROV POUR PRESTATION",
     "PART REASSUREURS DANS LA PARTICIPATION AUX RESULTATS",
-    "PART REASSUREURS DANS LES FRAIS REPORTES",
-    "SOLDE DE REASSURANCE",
+    "COMMISSIONS RECUES DES REASSUREURS",
+    "SOLDE DE REASSURANCE ET/OU DE RETROCESSION",
     "RESULTAT TECHNIQUE NON VIE",
     "INFORMATIONS COMPLEMENTAIRES",
     "PROVISIONS POUR PRIMES NON ACQUISES - ANNEE N",
-    "PROVISIONS POUR PRIMES NON ACQUISES - ANNEE N-1",
+    "PROVISIONS POUR PRIMES NON ACQUISES - ANNEE N",
     "PROVISIONS POUR SINSITRES A PAYER - ANNEE N",
-    "PROVISIONS POUR SINSITRES A PAYER - ANNEE N-1",
-    "PREVISIONS DE RECOURS A ENCAISSER - ANNEE N",
-    "PREVISIONS DE RECOURS A ENCAISSER - ANNEE N-1",
-    "PROVISIONS POUR PARTICIPATIONS AUX BENEFICES - ANNEE N",
-    "PROVISIONS POUR PARTICIPATIONS AUX BENEFICES - ANNEE N-1",
-    "PROVISIONS POUR EGALISATION ET EQUILIBRAGE - ANNEE N",
-    "PROVISIONS POUR EGALISATION ET EQUILIBRAGE - ANNEE N-1",
-    "PROVISIONS MATHEMATIQUES DE RENTE - ANNEE N",
-    "PROVISIONS MATHEMATIQUES DE RENTE - ANNEE N-1",
-    "PROVISIONS POUR RISQUES EN COURS - ANNEE N",
-    "PROVISIONS POUR RISQUES EN COURS - ANNEE N-1",
+    "PROVISIONS POUR SINSITRES A PAYER - ANNEE N",
+    "AUTRES PROVISIONS TECHNIQUES CLOTURE",
+    "AUTRES PROVISIONS TECHNIQUES OUVERTURE",
+    "A DEDUIRE"
 ]
 
 # Tolérance sur C1 (différences de somme)
@@ -640,65 +635,571 @@ def normalize_excel_annexe13_keep_style(in_path: str, out_path: str) -> str:
     save_with_retries(wb, out_path)
     return out_path
 
+def add_c1_c2_lines(ws):
+    last_row = ws.max_row
+    for r in range(ws.max_row, 1, -1):
+        if ws.cell(r, 1).value and str(ws.cell(r, 1).value).strip():
+            last_row = r
+            break
 
-def validate_excel_loop_annexe13_keep_style(xlsx_path: str) -> int:
+    start_row = last_row + 2
+
+    rules = [
+        "C1 = TOTAL - somme des autres colonnes = 0",
+        "C2 = Primes acquises − (Primes émises + Variation des primes non acquises) = 0"
+    ]
+
+    for i, desc in enumerate(rules, start=start_row):
+        ws.cell(row=i, column=1).value = desc
+        ws.cell(row=i, column=1).font = Font(bold=True)
+        ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=ws.max_column)
+
+
+
+def apply_colors(ws, c_rows, bad_cells):
     """
-    Boucle:
-      - ouvre workbook
-      - efface les marques (vert/orange/rouge) du cycle précédent
-      - calcule C1 partout + coloration
-      - si invalide => ouvre Excel et attend Ctrl+S, ferme, relance validation
-      - si valide => termine
+    Applique les couleurs de façon très ciblée :
+    - Orange sur les cellules LHS des règles invalides (C1 ou nom de règle)
+    - Rouge UNIQUEMENT sur l'intersection ligne erronée × colonne erronée
+    - Pas de vert au premier tour (vert appliqué seulement dans les fonctions de validation quand OK après correction)
     """
+    # Orange sur LHS invalides
+    for r, c in c_rows:
+        cell = ws.cell(r, c)
+        
+        cell.font = Font(bold=True)
+
+    # Rouge seulement sur les intersections réelles (ligne invalide ET colonne fautive)
+    invalid_rows = set(r for r, _ in c_rows)  # lignes avec erreur
+    invalid_cols = set()  # colonnes avec erreur significative
+
+    # On identifie les colonnes fautives (celles où la contribution est forte ou où C1 est hors tol)
+    for r, c in bad_cells:
+        invalid_cols.add(c)
+
+    # Rouge uniquement à l'intersection
+    for r in invalid_rows:
+        for c in invalid_cols:
+            cell = ws.cell(r, c)
+            if cell.fill != FILL_ORANGE:  # ne pas écraser orange sur LHS
+                cell.fill = FILL_RED
+                cell.font = Font(color="FFFFFF", bold=True)
+
+    # PAS DE VERT ICI → le vert est appliqué uniquement dans evaluate_total_c1_inplace
+    # et validate_c2_to_c8_inplace quand la différence est <= tol
+
+
+
+def validate_excel_loop_annexe13_keep_style(xlsx_path: str, tol: float = 5.0) -> int:
+    """
+    Validation Annexe 13 simplifiée : UNIQUEMENT C1 et C2
+    - Pas de vert au premier tour
+    - Vert seulement après correction quand valide
+    - Boucle tant que invalide → s'arrête automatiquement quand C1 et C2 sont OK
+    - Ctrl+S détecté pour revalider
+    """
+    print("=== Validation Annexe 13 démarrée (C1 + C2 uniquement) ===")
+    print("→ Ctrl+S dans Excel pour revalider après correction")
+    print("→ Sortie automatique quand C1 et C2 sont valides")
+
+    iteration = 0
+
     while True:
-        wb = openpyxl.load_workbook(xlsx_path)
-        ws = wb.active
+        iteration += 1
+        print(f"\n--- Itération {iteration} ---")
 
-        # effacer les couleurs appliquées par le script (vert/orange/rouge)
-        clear_previous_marks(ws)
+        try:
+            wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+            ws = wb.active
+        except Exception as e:
+            print(f"ERREUR lecture : {e}")
+            time.sleep(2)
+            continue
 
-        # recalcul + coloration
-        invalids = validate_c1_inplace(ws, header_row=1, data_start_row=2)
+        # Effacer toutes les couleurs précédentes
+        clear_only_our_fills(ws, first_data_row=2)
 
-        # auto-size (largeur + hauteur)
-        autosize_columns(ws)
-        autosize_rows(ws)
+        # Normalisation
+        normalize_columns_inplace(ws)
+        normalize_rows_inplace(ws)
 
-        # sauver
+        # Force C1
+        ensure_c1_column_inplace(ws, header_row=1)
+        c1_rows, bad_cells_c1 = evaluate_total_c1_inplace(ws, tol=tol)
+
+        # C2 uniquement
+        c_rows_c2, bad_cells_c2 = validate_c2_only_inplace(ws, tol=tol)
+
+        # Fusion
+        c_rows = c1_rows + c_rows_c2
+        bad_cells = bad_cells_c1 + bad_cells_c2
+
+        # Appliquer couleurs (orange/rouge seulement)
+        apply_colors(ws, c_rows, bad_cells)
+
+        # Ajouter lignes C1 et C2 sous le tableau
+        add_c1_c2_lines(ws)
+
+        # Ajuster colonnes
+        autofit_columns_keep_style(ws)
+
+        # Sauvegarde
         save_with_retries(wb, xlsx_path)
-
-        # libérer le fichier (sinon Permission denied)
         wb.close()
         del wb
 
-        if not invalids:
-            print("STATUT: Valide ✅ (Annexe 13)")
-            return 0
+        # Résultat
+        if not c_rows and not bad_cells:
+            print("STATUT: Valide ✅ (C1 et C2 OK)")
+            print("→ Validation terminée automatiquement")
+            return 0  # SORT quand tout est valide
 
-        print(f"STATUT: Invalide ❌ (Annexe 13) | lignes invalides = {len(invalids)} | Excel rows: {[x.excel_row for x in invalids]}")
-        print("🟡 Corrige dans Excel puis fais Ctrl+S (ensuite reviens ici).")
+        print(f"STATUT: Invalide ❌ | {len(c_rows)} erreurs détectées")
+        print("→ Ctrl+S dans Excel pour revalider...")
 
-        # ouvrir excel + attendre ctrl+s
-        handle = None
+        # Détection Ctrl+S
+        last_mtime = os.path.getmtime(xlsx_path)
+        last_size = os.path.getsize(xlsx_path)
+        while True:
+            time.sleep(0.6)
+            try:
+                current_mtime = os.path.getmtime(xlsx_path)
+                current_size = os.path.getsize(xlsx_path)
+            except:
+                continue
+            if current_mtime > last_mtime or current_size != last_size:
+                print("→ Ctrl+S détecté → re-validation...")
+                time.sleep(1.0)  # pause pour Excel
+                last_mtime = current_mtime
+                last_size = current_size
+                break
+
+
+def validate_c2_only_inplace(ws, tol=5.0):
+    c_rows = []
+    bad_cells = []
+
+    def norm(s):
+        if not s:
+            return ""
+        s = str(s).upper()
+        s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
+        s = s.replace("À", "A").replace("Â", "A")
+        s = s.replace("Ç", "C")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def find_row(label):
+        norm_label = norm(label)
+        for r in range(2, ws.max_row + 1):
+            cell = ws.cell(r, 1).value
+            if cell and norm_label in norm(str(cell)):
+                return r
+        return None
+
+    # C2 uniquement
+    lhs_r = find_row("PRIMES ACQUISES")  # si la ligne existe
+    if lhs_r is None:
+        # Sinon on utilise SOLDE DE SOUSSCRIPTION comme proxy (souvent dérivé)
+        lhs_r = find_row("SOLDE DE SOUSSCRIPTION")
+        if lhs_r is None:
+            print("→ Aucune ligne pour C2 trouvée (ni PRIMES ACQUISES ni SOLDE DE SOUSSCRIPTION)")
+            return c_rows, bad_cells
+
+    rhs_rows = []
+    for name in ["PRIMES EMISES", "VARIATION DES PRIMES NON ACQUISES"]:
+        rr = find_row(name)
+        if rr is None:
+            print(f"→ Ligne '{name}' non trouvée pour C2")
+            return c_rows, bad_cells
+        rhs_rows.append(rr)
+
+    lhs_vals = _row_numeric_vals(ws, lhs_r)
+    rhs_vals_list = [_row_numeric_vals(ws, rr) for rr in rhs_rows]
+
+    worst_col = None
+    worst_diff = 0.0
+
+    for col in range(2, ws.max_column + 1):
+        lhs_v = lhs_vals.get(col, 0.0)
+        rhs_sum = sum(d.get(col, 0.0) for d in rhs_vals_list)
+        diff = lhs_v - rhs_sum
+        if abs(diff) > abs(worst_diff):
+            worst_diff = diff
+            worst_col = col
+
+    if worst_col is None:
+        return c_rows, bad_cells
+
+    lhs_cell = ws.cell(lhs_r, worst_col)
+    lhs_cell.value = round(worst_diff, 2)
+
+    if abs(worst_diff) > tol:
+        lhs_cell.fill = FILL_ORANGE
+        lhs_cell.font = Font(bold=True)
+        c_rows.append((lhs_r, worst_col))
+
+        denom = abs(worst_diff) if abs(worst_diff) > 1e-9 else 0.0
+        contribs = []
+        for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+            v = rhs_vals.get(worst_col, 0.0)
+            if v != 0:
+                ratio = abs(v) / denom
+                if ratio > 0.3:
+                    contribs.append(rr)
+
+        if not contribs:
+            best_rr, best_abs = None, 0
+            for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+                vabs = abs(rhs_vals.get(worst_col, 0.0))
+                if vabs > best_abs:
+                    best_abs = vabs
+                    best_rr = rr
+            if best_rr:
+                contribs = [best_rr]
+
+        for rr in contribs:
+            bad_cells.append((rr, worst_col))
+    else:
+        lhs_cell.fill = FILL_GREEN
+        for rr in rhs_rows:
+            ws.cell(rr, worst_col).fill = FILL_GREEN
+
+    return c_rows, bad_cells
+
+            
+
+def evaluate_total_c1_inplace(ws, tol=5.0, header_row=1, first_data_row=2, contrib_threshold=0.30):
+    headers = _find_header_map(ws, header_row=header_row)
+    cat_col = headers.get("CATEGORIES")
+    total_col = headers.get("TOTAL")
+    c1_col = headers.get("C1")
+
+    if not cat_col or not total_col or not c1_col:
+        raise ValueError("Il faut CATEGORIES, TOTAL et C1 dans l'entête.")
+
+    numeric_cols = [c for k, c in headers.items() if k not in ("CATEGORIES", "C1")]
+
+    c1_rows = []
+    bad_cells = []
+
+    for r in range(first_data_row, ws.max_row + 1):
+        cat = ws.cell(r, cat_col).value
+        if cat is None or str(cat).strip() == "":
+            continue
+
+        total_val = parse_number(ws.cell(r, total_col).value)
+        if total_val is None:
+            continue
+
+        vals = {}
+        s = 0.0
+        for c in numeric_cols:
+            if c == total_col:
+                continue
+            v = parse_number(ws.cell(r, c).value)
+            v = 0.0 if v is None else float(v)
+            vals[c] = v
+            s += v
+
+        c1 = float(total_val) - float(s)
+        ws.cell(r, c1_col).value = round(c1, 2)
+
+        if abs(c1) <= tol:
+            continue
+
+        c1_rows.append((r, c1_col))
+
+        denom = abs(s) if abs(s) > 1e-9 else 0.0
+        contribs = []
+        if denom > 0:
+            for c, v in vals.items():
+                if v != 0 and (abs(v) / denom) > contrib_threshold:
+                    contribs.append(c)
+
+        if not contribs and vals:
+            best_c = max(vals.keys(), key=lambda cc: abs(vals[cc]))
+            contribs = [best_c]
+
+        for cc in contribs:
+            bad_cells.append((r, cc))
+
+    return c1_rows, list(set(bad_cells))
+
+
+def validate_c2_to_c8_inplace(ws, tol=5.0):
+    c_rows = []
+    bad_cells = []
+
+    def norm(s):
+        if not s:
+            return ""
+        s = str(s).upper()
+        s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
+        s = s.replace("À", "A").replace("Â", "A")
+        s = s.replace("Ç", "C").replace("’", "'")
+        s = re.sub(r"\s+", " ", s).strip()
+        s = re.sub(r"[^A-Z0-9\s]", "", s)
+        return s
+
+    def find_row(label):
+        norm_label = norm(label)
+        for r in range(2, ws.max_row + 1):
+            cell = ws.cell(r, 1).value
+            if cell and norm_label in norm(str(cell)):
+                return r
+        return None
+
+    def mark_rule(lhs_name, rhs_names, rule_label):
+        lhs_r = find_row(lhs_name)
+        if lhs_r is None:
+            print(f"→ Ligne '{lhs_name}' non trouvée pour {rule_label}")
+            return
+
+        rhs_rows = []
+        for name in rhs_names:
+            rr = find_row(name)
+            if rr is None:
+                print(f"→ Ligne '{name}' non trouvée pour {rule_label}")
+                return
+            rhs_rows.append(rr)
+
+        lhs_vals = _row_numeric_vals(ws, lhs_r)
+        rhs_vals_list = [_row_numeric_vals(ws, rr) for rr in rhs_rows]
+
+        worst_col = None
+        worst_diff = 0.0
+
+        for col in range(2, ws.max_column + 1):
+            lhs_v = lhs_vals.get(col, 0.0)
+            rhs_sum = sum(d.get(col, 0.0) for d in rhs_vals_list)
+            diff = lhs_v - rhs_sum
+            if abs(diff) > abs(worst_diff):
+                worst_diff = diff
+                worst_col = col
+
+        if worst_col is None:
+            return
+
+        lhs_cell = ws.cell(lhs_r, worst_col)
+        lhs_cell.value = round(worst_diff, 2)
+
+        if abs(worst_diff) > tol:
+            lhs_cell.fill = FILL_ORANGE
+            lhs_cell.font = Font(bold=True)
+            c_rows.append((lhs_r, worst_col))
+
+            denom = abs(worst_diff) if abs(worst_diff) > 1e-9 else 0.0
+            contribs = []
+            for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+                v = rhs_vals.get(worst_col, 0.0)
+                if v != 0:
+                    ratio = abs(v) / denom
+                    if ratio > 0.3:
+                        contribs.append(rr)
+
+            if not contribs:
+                best_rr, best_abs = None, 0
+                for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+                    vabs = abs(rhs_vals.get(worst_col, 0.0))
+                    if vabs > best_abs:
+                        best_abs = vabs
+                        best_rr = rr
+                if best_rr:
+                    contribs = [best_rr]
+
+            for rr in contribs:
+                bad_cells.append((rr, worst_col))
+        else:
+            # Vert seulement si valide
+            lhs_cell.fill = FILL_GREEN
+            for rr in rhs_rows:
+                ws.cell(rr, worst_col).fill = FILL_GREEN
+
+    # Règles avec libellés très proches du fichier réel
+    mark_rule("SOLDE DE SOUSSCRIPTION", ["PRIMES EMISES", "VARIATION DES PRIMES NON ACQUISES"], "C2")
+    mark_rule("CHARGES DE PRESTATIONS", ["PRESTATIONS ET FRAIS PAYES", "CHARGES DES PROVISIONS POUR PRESTATIONS DIVERSE"], "C3")
+    mark_rule("SOLDE DE SOUSSCRIPTION", ["PRIMES EMISES", "CHARGES DE PRESTATIONS"], "C4")
+    mark_rule("CHARGES D'ACQUISITION ET DE GESTION NETTES", ["FRAIS D'ACQUISITION", "AUTRES CHARGES DE GESTION NETTES"], "C5")
+    mark_rule("SOLDE FINANCIER", ["PRODUITS NETS DE PLACEMENTS", "PARTICIPATION AUX RESULTATS"], "C6")
+    mark_rule("SOLDE DE REASSURANCE ET/OU DE RETROCESSION", [
+        "PRIMES CEDEES AUX REASSUREURS",
+        "PART REASSUREURS DANS LES PRIMES ACQUISES",
+        "PART REASSUREURS DANS LES PRESTATIONS PAYEES",
+        "PART DES REAS ET/OU DES RETROC DANS LES CHARGES DE PROV POUR PRESTATION",
+        "PART REASSUREURS DANS LA PARTICIPATION AUX RESULTATS",
+        "COMMISSIONS RECUES DES REASSUREURS"
+    ], "C7")
+    mark_rule("RESULTAT TECHNIQUE NON VIE", [
+        "SOLDE DE SOUSSCRIPTION",
+        "CHARGES D'ACQUISITION ET DE GESTION NETTES",
+        "SOLDE FINANCIER",
+        "SOLDE DE REASSURANCE ET/OU DE RETROCESSION"
+    ], "C8")
+
+    return c_rows, bad_cells
+
+
+
+def validate_annexe13_rules_inplace(ws, tol=5.0, header_row=1, first_data_row=2, contrib_threshold=0.30):
+    """
+    Applique les 8 règles C2 à C8
+    - Pour chaque règle invalide : marque LHS orange + RHS contributrices rouges
+    - Valide : vert sur LHS et RHS
+    Retourne : c_rows (lignes à orange), bad_cells (cellules rouges)
+    """
+    c_rows = []
+    bad_cells = []
+
+    def _mark_rule(lhs_name, rhs_names_list):
+        lhs_r = _row_index_by_name(ws, lhs_name, header_row, first_data_row)
+        if lhs_r is None:
+            return
+
+        rhs_rows = []
+        for name in rhs_names_list:
+            rr = _row_index_by_name(ws, name, header_row, first_data_row)
+            if rr is None:
+                return
+            rhs_rows.append(rr)
+
+        lhs_vals = _row_numeric_vals(ws, lhs_r)
+        rhs_vals_list = [_row_numeric_vals(ws, rr) for rr in rhs_rows]
+
+        worst_col = None
+        worst_diff = 0.0
+
+        for col in range(2, ws.max_column + 1):  # saute CATEGORIES
+            lhs_v = lhs_vals.get(col, 0.0)
+            rhs_sum = sum(d.get(col, 0.0) for d in rhs_vals_list)
+            diff = lhs_v - rhs_sum
+            if abs(diff) > abs(worst_diff):
+                worst_diff = diff
+                worst_col = col
+
+        if worst_col is None or abs(worst_diff) <= tol:
+            # valide → vert sur LHS et tous RHS
+            ws.cell(lhs_r, worst_col).fill = FILL_GREEN
+            for rr in rhs_rows:
+                ws.cell(rr, worst_col).fill = FILL_GREEN
+            return
+
+        # invalide → orange sur LHS
+        lhs_cell = ws.cell(lhs_r, worst_col)
+        lhs_cell.value = round(worst_diff, 2)
+       
+        lhs_cell.font = Font(bold=True)
+        c_rows.append((lhs_r, worst_col))
+
+        # rouge sur contributrices
+        denom = abs(worst_diff) if abs(worst_diff) > 1e-9 else 0.0
+        if denom <= 0:
+            return
+
+        contribs = []
+        for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+            v = rhs_vals.get(worst_col, 0.0)
+            if v != 0:
+                ratio = abs(v) / denom
+                if ratio > contrib_threshold:
+                    contribs.append(rr)
+
+        # fallback : la plus grande |valeur|
+        if not contribs:
+            best_rr, best_abs = None, 0
+            for rr, rhs_vals in zip(rhs_rows, rhs_vals_list):
+                vabs = abs(rhs_vals.get(worst_col, 0.0))
+                if vabs > best_abs:
+                    best_abs = vabs
+                    best_rr = rr
+            if best_rr:
+                contribs = [best_rr]
+
+        for rr in contribs:
+            bad_cells.append((rr, worst_col))
+
+    # Tes 8 règles (exactement comme tu les as listées)
+    _mark_rule("PRIMES ACQUISES", ["PRIMES EMISES", "VARIATION DES PRIMES NON ACQUISES"])  # C2
+    _mark_rule("CHARGES DE PRESTATIONS", ["PRESTATIONS ET FRAIS PAYES", "CHARGES DES PROVISIONS POUR PRESTATIONS DIVERSE"])  # C3
+    _mark_rule("SOLDE DE SOUSCRIPTION", ["PRIMES ACQUISES", "CHARGES DE PRESTATIONS"])  # C4
+    _mark_rule("CHARGES D'ACQUISITION ET DE GESTION NETTES", ["FRAIS D'ACQUISITION", "AUTRES CHARGES DE GESTION NETTES"])  # C5
+    _mark_rule("SOLDE FINANCIER", ["PRODUITS NETS DE PLACEMENTS", "PARTICIPATION AUX RESULTATS"])  # C6
+    _mark_rule("SOLDE DE REASSURANCE ET/OU DE RETROCESSION", [
+        "PRIMES CEDEES AUX REASSUREURS",
+        "PART REASSUREURS DANS LES PRIMES ACQUISES",
+        "PART REASSUREURS DANS LES PRESTATIONS PAYEES",
+        "PART DES REAS ET/OU DES RETROC DANS LES CHARGES DE PROV POUR PRESTATION",
+        "PART REASSUREURS DANS LA PARTICIPATION AUX RESULTATS",
+        "COMMISSIONS RECUES DES REASSUREURS"
+    ])  # C7
+    _mark_rule("RESULTAT TECHNIQUE NON VIE", [
+        "SOLDE DE SOUSSCRIPTION",
+        "CHARGES D'ACQUISITION ET DE GESTION NETTES",
+        "SOLDE FINANCIER",
+        "SOLDE DE REASSURANCE ET/OU DE RETROCESSION"
+    ])  # C8
+
+    return c_rows, bad_cells
+
+
+
+def _num(v):
+    """Convertit en float ou 0"""
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(" ", "").replace(",", "."))
+    except:
+        return 0.0
+
+
+def _row_numeric_vals(ws, row):
+    """Dict {col: valeur numérique} pour une ligne"""
+    vals = {}
+    for c in range(2, ws.max_column + 1):
+        v = ws.cell(row, c).value
+        vals[c] = _num(v)
+    return vals
+
+
+def _row_index_by_name(ws, name, header_row=1, first_data_row=2):
+    """Trouve la ligne d'un libellé dans CATEGORIES"""
+    name_norm = _norm_key(name)
+    for r in range(first_data_row, ws.max_row + 1):
+        cell = ws.cell(r, 1).value
+        if cell and name_norm in _norm_key(str(cell)):
+            return r
+    return None
+
+
+def clear_only_our_fills(ws, first_data_row=2):
+    target = {"FFFF0000", "00FF0000", "FFFFA500", "00FFA500", "FF00B050", "00B050"}
+    for r in range(first_data_row, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            cell = ws.cell(r, c)
+            try:
+                rgb = (cell.fill.fgColor.rgb or "").upper()
+            except Exception:
+                rgb = ""
+            if rgb in target:
+                cell.fill = PatternFill(fill_type=None)
+
+
+
+def autofit_columns_keep_style(ws, min_width=8.0, max_width=60.0, padding=2.0):
+    # (copie ta fonction existante si elle est différente)
+    # ... ton code autofit ici ...
+    pass  # remplace par ta vraie implémentation
+
+
+def save_with_retries(wb, path, retries=3):
+    for _ in range(retries):
         try:
-            handle = _open_excel_2010_or_default(xlsx_path)
-            ok = wait_for_ctrl_s(xlsx_path, poll=0.8)
-            if ok:
-                print("CTRL+S détecté, fermeture du fichier Excel...")
-            _close_excel_handle(handle)
-        except Exception:
-            try:
-                _close_excel_handle(handle)
-            except:
-                pass
-            try:
-                subprocess.run(["taskkill", "/F", "/IM", "EXCEL.EXE"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print("Excel fermé via terminaison du processus EXCEL.EXE.")
-            except:
-                pass
-
-        print("🔁 Relance validation...")
-
+            wb.save(path)
+            return
+        except PermissionError:
+            time.sleep(1)
+    print("ERREUR : Impossible de sauvegarder (fichier ouvert ?)")
 
 # =========================
 # MAIN

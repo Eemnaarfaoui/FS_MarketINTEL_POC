@@ -26,15 +26,13 @@ import re
 import time
 import logging
 from datetime import datetime
-from turtle import pd
 from urllib.parse import urlparse, urlencode, parse_qs
 import glob
 import subprocess
 
 import requests
-# ── MySQL imports commented out ──
-# import mysql.connector
-# from mysql.connector import Error
+import mysql.connector
+from mysql.connector import Error
 
 
 from selenium import webdriver
@@ -1614,7 +1612,7 @@ def main():
                 tables = extract_native_pdf(pdf_path, page_num)
                 # fallback OCR si natif échoue
                 if not tables:
-                    print("⚠️ Extraction natif vide -> tentative OCR fallback...")
+                    print("⚠️ Extraction natif vide → tentative OCR fallback...")
                     tables = extract_scanned_pdf(pdf_path, page_num)
 
             if not tables:
@@ -1622,7 +1620,7 @@ def main():
                 logging.warning(f"Aucun tableau exploitable pour {section_display}")
                 continue
 
-            # ✅ Noms courts demandés
+            # Noms courts demandés
             if section_key == "Annexe_12":
                 output_name = f"12E{ANNEE}.xlsx"
             elif section_key == "Annexe_13":
@@ -1646,28 +1644,58 @@ def main():
             elif section_key == "Annexe_13":
                 annexe13_export_path = saved_path
 
-        # 6) Lancer C.py seulement sur Annexe 12 (si extrait)
+        # 6) Validation Annexe 12 → si validée, lancer automatiquement Annexe 13
         if annexe12_export_path and os.path.exists(annexe12_export_path):
-            rc_c = run_c_normalisation(annexe12_export_path)
-            print(f"✅ C.py (Annexe 12) terminé avec code retour = {rc_c}")
-            logging.info(f"C.py (Annexe 12) terminé avec code retour = {rc_c}")
+            print(f"\n{'='*80}")
+            print(f" LANCEMENT VALIDATION ANNEXE 12")
+            print(f" Fichier : {annexe12_export_path}")
+            print(f"{'='*80}")
 
-            # ✅ Scénario demandé : si Annexe 12 validée (rc==0) => lancer B.py sur Annexe 13
+            rc_c = run_c_normalisation(annexe12_export_path)
+            print(f"→ NorVal12.py terminé | Code retour = {rc_c}")
+
             if rc_c == 0:
+                print("\nANNEXE 12 VALIDÉE → Lancement automatique de NorVal13.py")
                 if annexe13_export_path and os.path.exists(annexe13_export_path):
+                    print(f"→ Fichier transmis : {annexe13_export_path}")
                     rc_b = run_b_processing(annexe13_export_path)
-                    print(f"✅ B.py (Annexe 13) terminé avec code retour = {rc_b}")
-                    logging.info(f"B.py (Annexe 13) terminé avec code retour = {rc_b}")
+                    print(f"→ NorVal13.py terminé | Code retour = {rc_b}")
+                    logging.info(f"NorVal13.py lancé automatiquement (rc={rc_b})")
+
+                    # Si les deux sont validés → ouvrir les fichiers NV finaux dans Excel
+                    if rc_b == 0:
+                        print("\nLes deux annexes sont validées → ouverture automatique dans Excel")
+                        dossier_soc = os.path.dirname(annexe12_export_path)
+                        
+                        # Chercher les fichiers NV les plus récents
+                        nv12_files = glob.glob(os.path.join(dossier_soc, f"*12NV{ANNEE}*.xlsx"))
+                        nv13_files = glob.glob(os.path.join(dossier_soc, f"*13NV{ANNEE}*.xlsx"))
+
+                        if nv12_files:
+                            latest_nv12 = max(nv12_files, key=os.path.getmtime)
+                            print(f"→ Ouverture : {latest_nv12}")
+                            os.startfile(latest_nv12)
+                        else:
+                            print("⚠️ Fichier 12NV{ANNEE}.xlsx non trouvé → ouvre-le manuellement")
+
+                        if nv13_files:
+                            latest_nv13 = max(nv13_files, key=os.path.getmtime)
+                            print(f"→ Ouverture : {latest_nv13}")
+                            os.startfile(latest_nv13)
+                        else:
+                            print("⚠️ Fichier 13NV{ANNEE}.xlsx non trouvé → ouvre-le manuellement")
                 else:
-                    print("ℹ️ Annexe 13 non exportée -> B.py non lancé.")
-                    logging.info("Annexe 13 non exportée -> B.py non lancé.")
+                    print("⚠️ Annexe 13 introuvable ou non exportée → NorVal13.py NON lancé")
+                    logging.warning("Annexe 13 introuvable → skip NorVal13.py")
             else:
-                print("ℹ️ Annexe 12 non validée -> B.py non lancé.")
-                logging.info("Annexe 12 non validée -> B.py non lancé.")
+                print(f"ANNEXE 12 NON VALIDÉE (rc={rc_c}) → NorVal13.py NON lancé")
+                logging.info(f"Annexe 12 non validée (rc={rc_c}) → skip NorVal13.py")
+
+            print(f"{'='*80}")
 
         else:
-            print("ℹ️ Annexe 12 non exportée -> C.py non lancé.")
-            logging.info("Annexe 12 non exportée -> C.py non lancé.")
+            print("ℹ️ Annexe 12 non exportée ou introuvable → validation C.py NON lancée")
+            logging.info("Annexe 12 non exportée → skip validation et NorVal13.py")
 
         print(f"\n=== Terminé en {time.time() - start_time:.2f} s ===")
         logging.info(f"Script terminé en {time.time() - start_time:.2f} s")
@@ -1676,16 +1704,15 @@ def main():
         logging.error(f"ERREUR GLOBALE : {str(e)}")
         print(f"\n=== ERREUR GLOBALE : {str(e)} ===")
 
-    # ── MySQL cleanup COMMENTED OUT ──
-    # finally:
-    #     try:
-    #         if connection and connection.is_connected():
-    #             cursor.close()
-    #             connection.close()
-    #             logging.info("Connexion MySQL fermée")
-    #             print("\n=== MySQL fermé ===")
-    #     except Exception:
-    #         pass
+    finally:
+        try:
+            if connection and connection.is_connected():
+                cursor.close()
+                connection.close()
+                logging.info("Connexion MySQL fermée")
+                print("\n=== MySQL fermé ===")
+        except Exception:
+            pass
 
 
 
@@ -1706,3 +1733,5 @@ if __name__ == "__main__":
         ANNEE = int(sys.argv[2])
 
     sys.exit(int(main() or 0))
+
+
